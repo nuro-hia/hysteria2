@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Hysteria + Xboard 一键部署与管理脚本（自动证书）
+# Hysteria + Xboard 一键部署与管理脚本（最终版）
 # 作者: nuro
 # 仓库: https://github.com/nuro-hia/hysteria2
 # ============================================================
@@ -9,16 +9,31 @@ set -e
 CONFIG_DIR="/etc/hysteria"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 
-# 检查 docker
+# 检查 Docker 是否存在
 check_docker() {
   if ! command -v docker >/dev/null 2>&1; then
-    echo "🐳 未检测到 Docker，正在安装..."
+    echo "🐳 未检测到 Docker，正在自动安装..."
     apt update -y >/dev/null 2>&1
     apt install -y docker.io docker-compose curl wget -y >/dev/null 2>&1
-    systemctl enable docker --now
+    systemctl enable docker --now >/dev/null 2>&1
+    echo "✅ Docker 安装完成。"
   fi
 }
 
+# 检查 acme.sh
+check_acme() {
+  if [ ! -d "/root/.acme.sh" ]; then
+    echo "📦 正在安装 acme.sh ..."
+    (curl -fsSL https://get.acme.sh | sh) >/dev/null 2>&1
+  fi
+
+  if [ ! -f "/root/.acme.sh/account.conf" ]; then
+    echo "📧 注册默认邮箱 no-reply@autogen.local ..."
+    /root/.acme.sh/acme.sh --register-account -m no-reply@autogen.local >/dev/null 2>&1 || true
+  fi
+}
+
+# 菜单
 menu() {
   clear
   echo "=============================="
@@ -45,8 +60,10 @@ menu() {
   esac
 }
 
+# 安装与部署
 install_hysteria() {
   check_docker
+  check_acme
 
   echo "🚀 开始安装 Hysteria 对接 Xboard ..."
   read -rp "🧭 请输入 Xboard 面板地址 (如 https://xboard.example.com): " API_HOST
@@ -58,6 +75,7 @@ install_hysteria() {
 
   mkdir -p "$CONFIG_DIR"
 
+  # 写入配置文件
   cat > ${CONFIG_DIR}/server.yaml <<EOF
 v2board:
   apiHost: ${API_HOST}
@@ -86,6 +104,7 @@ acl:
 listen: :${PORT}
 EOF
 
+  # 写入 docker-compose
   cat > ${COMPOSE_FILE} <<EOF
 version: '3'
 services:
@@ -99,28 +118,22 @@ services:
     command: server -c /etc/hysteria/server.yaml
 EOF
 
-  echo "🔒 检查并安装 acme.sh ..."
-  if [ ! -d "/root/.acme.sh" ]; then
-    curl https://get.acme.sh | sh >/dev/null 2>&1
-  fi
-
-  echo "📧 检查注册邮箱..."
-  if [ ! -f "/root/.acme.sh/account.conf" ]; then
-    /root/.acme.sh/acme.sh --register-account -m no-reply@autogen.local >/dev/null 2>&1
-  fi
-
-  echo "📜 申请证书中..."
-  /root/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone || true
-  /root/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
-    --key-file ${CONFIG_DIR}/privkey.pem \
-    --fullchain-file ${CONFIG_DIR}/fullchain.pem >/dev/null 2>&1
-
+  # 申请证书
+  echo "🔒 检查证书 ..."
   if [[ ! -f "${CONFIG_DIR}/fullchain.pem" || ! -f "${CONFIG_DIR}/privkey.pem" ]]; then
-      echo "❌ 证书申请失败，请检查域名是否正确解析到本机！"
+    echo "📜 正在申请证书 ${DOMAIN} ..."
+    /root/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone || true
+    /root/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
+      --key-file ${CONFIG_DIR}/privkey.pem \
+      --fullchain-file ${CONFIG_DIR}/fullchain.pem >/dev/null 2>&1
+  fi
+
+  if [[ ! -f "${CONFIG_DIR}/fullchain.pem" ]]; then
+      echo "❌ 证书申请失败，请检查域名解析是否正确！"
       exit 1
   fi
 
-  echo "🐳 启动容器..."
+  echo "🐳 启动容器 ..."
   docker compose -f ${COMPOSE_FILE} up -d
   echo "✅ 部署完成！"
   echo "--------------------------------------"
@@ -135,22 +148,25 @@ EOF
 }
 
 restart_hysteria() {
-  echo "🔄 正在重启容器..."
-  docker compose -f ${COMPOSE_FILE} restart
+  check_docker
+  echo "🔄 正在重启容器 ..."
+  docker compose -f ${COMPOSE_FILE} restart || echo "⚠️ 未检测到容器"
   echo "✅ 已重启。"
   sleep 1
   menu
 }
 
 stop_hysteria() {
-  echo "🛑 停止容器..."
-  docker compose -f ${COMPOSE_FILE} down
+  check_docker
+  echo "🛑 停止容器 ..."
+  docker compose -f ${COMPOSE_FILE} down || echo "⚠️ 未检测到容器"
   echo "✅ 已停止。"
   sleep 1
   menu
 }
 
 remove_hysteria() {
+  check_docker
   echo "⚠️ 该操作将删除容器和配置！"
   read -rp "确认删除？(y/N): " confirm
   if [[ $confirm =~ ^[Yy]$ ]]; then
@@ -163,13 +179,15 @@ remove_hysteria() {
 }
 
 view_logs() {
+  check_docker
   echo "📜 正在查看日志 (Ctrl+C 退出)..."
-  docker logs -f hysteria || echo "未找到容器。"
+  docker logs -f hysteria || echo "⚠️ 未找到容器。"
   menu
 }
 
 update_image() {
-  echo "⬆️ 拉取最新镜像并重启..."
+  check_docker
+  echo "⬆️ 拉取最新镜像并重启 ..."
   docker pull ghcr.io/cedar2025/hysteria:latest
   docker compose -f ${COMPOSE_FILE} up -d
   echo "✅ 镜像已更新并重启完成。"
