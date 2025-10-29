@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 快速管理脚本 v4-final
-# 作者: nuro | 2025-10-30
+# Hysteria 对接 XBoard 快速管理脚本 v5 (终极版)
+# 作者: nuro | 日期: 2025-10-30
 # =====================================================
 
 set -e
@@ -9,15 +9,12 @@ CONFIG_DIR="/etc/hysteria"
 IMAGE="ghcr.io/cedar2025/hysteria:latest"
 CONTAINER="hysteria"
 
-# -------------------------------
-# 基础函数
-# -------------------------------
 pause() { echo ""; read -rp "按回车返回菜单..." _; menu; }
 
 header() {
   clear
   echo "=============================="
-  echo " Hysteria 对接 XBoard 快速脚本"
+  echo " Hysteria 对接 XBoard 管理脚本"
   echo "=============================="
   echo "1 安装并启动 Hysteria"
   echo "2 重启容器"
@@ -31,7 +28,7 @@ header() {
 }
 
 # -------------------------------
-# Docker 环境检测与修复
+# Docker 安装与修复
 # -------------------------------
 fix_docker_tmp() {
   local root_dir
@@ -81,6 +78,7 @@ install_hysteria() {
 
   echo "🐳 启动 Hysteria 容器..."
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  docker rmi "$IMAGE" >/dev/null 2>&1 || true
 
   if ! docker run -itd --restart=always --network=host \
     -v "${CERT_FILE}:/etc/hysteria/tls.crt" \
@@ -111,6 +109,7 @@ install_hysteria() {
   echo "✅ 部署完成"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
+  echo "🔑 通讯密钥: ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
   echo "📜 证书文件: ${CERT_FILE}"
@@ -145,26 +144,24 @@ update_image() {
 }
 
 # -------------------------------
-# 卸载 Docker 全部组件
+# 卸载 Docker 全部
 # -------------------------------
 uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 及全部组件"
   read -rp "确认继续？(y/n): " c
   if [[ $c =~ ^[Yy]$ ]]; then
-    local container_count
-    container_count=$(docker ps -aq | wc -l)
-    if [[ "$container_count" -le 1 ]]; then
-      docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-      docker rmi "$IMAGE" >/dev/null 2>&1 || true
-      rm -rf "$CONFIG_DIR"
-      apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1
-      rm -rf /var/lib/docker /var/lib/containerd /etc/docker
-      echo "✅ 已彻底卸载 Docker"
-    else
-      echo "⚠️ 检测到其他容器存在，已跳过 Docker 卸载，仅清理 Hysteria"
-      docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-      docker rmi "$IMAGE" >/dev/null 2>&1 || true
-    fi
+    echo "🧹 正在停止所有容器..."
+    docker stop $(docker ps -aq) >/dev/null 2>&1 || true
+    echo "🧹 正在删除所有容器和镜像..."
+    docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
+    docker rmi -f $(docker images -q) >/dev/null 2>&1 || true
+    echo "🧹 删除配置文件和目录..."
+    rm -rf "$CONFIG_DIR" /var/lib/docker /var/lib/containerd /etc/docker
+    echo "🧹 移除服务与包..."
+    apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
+    apt autoremove -y >/dev/null 2>&1
+    systemctl disable docker >/dev/null 2>&1 || true
+    echo "✅ 已彻底卸载 Docker 与 Hysteria 所有组件"
   fi
   pause
 }
