@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 快速管理脚本 v5 (终极版)
-# 作者: nuro | 日期: 2025-10-30
+# Hysteria 对接 XBoard 管理脚本 v6 (ACME禁用+完整卸载)
+# 作者: nuro | 更新: 2025-10-30
 # =====================================================
 
 set -e
@@ -27,9 +27,6 @@ header() {
   echo "=============================="
 }
 
-# -------------------------------
-# Docker 安装与修复
-# -------------------------------
 fix_docker_tmp() {
   local root_dir
   root_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
@@ -53,9 +50,6 @@ install_docker() {
   fix_docker_tmp
 }
 
-# -------------------------------
-# 安装并启动 Hysteria
-# -------------------------------
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -70,7 +64,7 @@ install_hysteria() {
   KEY_FILE="${CONFIG_DIR}/tls.key"
 
   echo ""
-  echo "📜 生成自签证书..."
+  echo "📜 正在生成自签证书..."
   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout "$KEY_FILE" -out "$CERT_FILE" \
     -subj "/CN=${DOMAIN}" >/dev/null 2>&1
@@ -78,7 +72,6 @@ install_hysteria() {
 
   echo "🐳 启动 Hysteria 容器..."
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  docker rmi "$IMAGE" >/dev/null 2>&1 || true
 
   if ! docker run -itd --restart=always --network=host \
     -v "${CERT_FILE}:/etc/hysteria/tls.crt" \
@@ -118,9 +111,6 @@ install_hysteria() {
   pause
 }
 
-# -------------------------------
-# 删除容器与配置
-# -------------------------------
 remove_container() {
   echo "⚠️ 确认删除 Hysteria 容器与配置？"
   read -rp "输入 y 继续: " c
@@ -133,9 +123,6 @@ remove_container() {
   pause
 }
 
-# -------------------------------
-# 更新镜像
-# -------------------------------
 update_image() {
   docker pull "$IMAGE"
   docker restart "$CONTAINER" || true
@@ -143,21 +130,17 @@ update_image() {
   pause
 }
 
-# -------------------------------
-# 卸载 Docker 全部
-# -------------------------------
 uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 及全部组件"
   read -rp "确认继续？(y/n): " c
   if [[ $c =~ ^[Yy]$ ]]; then
-    echo "🧹 正在停止所有容器..."
+    echo "🧹 停止所有容器..."
     docker stop $(docker ps -aq) >/dev/null 2>&1 || true
-    echo "🧹 正在删除所有容器和镜像..."
+    echo "🧹 删除容器与镜像..."
     docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
     docker rmi -f $(docker images -q) >/dev/null 2>&1 || true
-    echo "🧹 删除配置文件和目录..."
+    echo "🧹 删除配置文件与服务..."
     rm -rf "$CONFIG_DIR" /var/lib/docker /var/lib/containerd /etc/docker
-    echo "🧹 移除服务与包..."
     apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
     apt autoremove -y >/dev/null 2>&1
     systemctl disable docker >/dev/null 2>&1 || true
@@ -166,9 +149,6 @@ uninstall_docker_all() {
   pause
 }
 
-# -------------------------------
-# 主菜单
-# -------------------------------
 menu() {
   header
   read -rp "请选择操作: " opt
