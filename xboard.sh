@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
-# 🌀 Hysteria 对接 XBoard 管理脚本（自动 URL 编码 + 自签证书 + 完整卸载版）
-# 作者: nuro | 日期: 2025-10-30
+# 🌀 Hysteria 对接 XBoard 管理脚本（内置自签证书 + 完整卸载Docker）
+# 作者: nuro | 版本: 2025-10-30
 # =====================================================
 
 set -e
@@ -27,11 +27,11 @@ header() {
   echo "=============================="
 }
 
+# -------------------------------
+# URL 编码函数
+# -------------------------------
 urlencode() {
-  # URL 编码函数
-  local data="$1"
-  local output=""
-  local i c
+  local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
     c=${data:$i:1}
     case $c in
@@ -42,6 +42,9 @@ urlencode() {
   echo "$output"
 }
 
+# -------------------------------
+# 安装 Docker
+# -------------------------------
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -51,7 +54,7 @@ install_docker() {
     echo "✅ 已检测到 Docker"
   fi
 
-  # 自动解除 mask、恢复 socket 激活
+  # 修复 masked 状态
   systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
   systemctl enable docker.socket >/dev/null 2>&1 || true
   systemctl start docker.socket >/dev/null 2>&1 || true
@@ -68,6 +71,9 @@ install_docker() {
   docker ps >/dev/null 2>&1 && echo "✅ Docker 已正常运行"
 }
 
+# -------------------------------
+# 安装 Hysteria
+# -------------------------------
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -77,8 +83,8 @@ install_hysteria() {
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
+  read -rp "📧 ACME 注册邮箱(可随意填写): " EMAIL
 
-  # URL 编码处理
   API_KEY=$(urlencode "$RAW_API_KEY")
 
   echo "📜 生成自签证书..."
@@ -97,6 +103,7 @@ install_hysteria() {
     -e apiKey="${API_KEY}" \
     -e nodeID="${NODE_ID}" \
     -e domain="${DOMAIN}" \
+    -e acmeEmail="${EMAIL}" \
     -e tlsCert="/etc/hysteria/tls.crt" \
     -e tlsKey="/etc/hysteria/tls.key" \
     --name "${CONTAINER}" \
@@ -112,17 +119,12 @@ install_hysteria() {
   echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
-
-  echo ""
-  echo "🔍 检测接口连通性..."
-  if curl -s "${API_HOST}/api/v1/server/UniProxy/user?token=${API_KEY}&node_id=${NODE_ID}&node_type=hysteria" | grep -q '"data"'; then
-    echo "✅ XBoard 通信正常"
-  else
-    echo "⚠️ 未能获取节点信息，请检查 XBoard 面板配置或 token"
-  fi
   pause
 }
 
+# -------------------------------
+# 删除容器与配置
+# -------------------------------
 remove_container() {
   echo "⚠️ 确认删除 Hysteria 容器与配置？"
   read -rp "输入 y 继续: " c
@@ -135,6 +137,9 @@ remove_container() {
   pause
 }
 
+# -------------------------------
+# 更新镜像
+# -------------------------------
 update_image() {
   docker pull "$IMAGE"
   docker restart "$CONTAINER" || true
@@ -142,6 +147,9 @@ update_image() {
   pause
 }
 
+# -------------------------------
+# 完整卸载 Docker
+# -------------------------------
 uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 及全部组件"
   read -rp "确认继续？(y/n): " c
@@ -150,26 +158,40 @@ uninstall_docker_all() {
   echo "🧹 停止所有 Docker 服务..."
   systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
   systemctl stop docker docker.socket containerd 2>/dev/null || true
+  systemctl disable docker docker.socket containerd 2>/dev/null || true
   pkill -f dockerd 2>/dev/null || true
   pkill -f containerd 2>/dev/null || true
 
   echo "🧹 删除容器、镜像、卷、网络..."
-  systemctl start docker || true
-  docker stop $(docker ps -aq) 2>/dev/null || true
-  docker rm -f $(docker ps -aq) 2>/dev/null || true
-  docker rmi -f $(docker images -aq) 2>/dev/null || true
-  docker volume rm $(docker volume ls -q) 2>/dev/null || true
-  docker network rm $(docker network ls -q | grep -vE 'bridge|host|none') 2>/dev/null || true
-  docker system prune -af --volumes 2>/dev/null || true
+  if command -v docker >/dev/null 2>&1; then
+    docker stop $(docker ps -aq) 2>/dev/null || true
+    docker rm -f $(docker ps -aq) 2>/dev/null || true
+    docker rmi -f $(docker images -aq) 2>/dev/null || true
+    docker volume rm $(docker volume ls -q) 2>/dev/null || true
+    docker network rm $(docker network ls -q | grep -vE 'bridge|host|none') 2>/dev/null || true
+    docker system prune -af --volumes 2>/dev/null || true
+  fi
 
-  echo "🧹 清除所有文件与目录..."
-  rm -rf /etc/hysteria /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
-  rm -rf /etc/systemd/system/docker* /lib/systemd/system/docker* /usr/lib/systemd/system/docker*
+  echo "🧹 清理所有文件..."
+  rm -rf /etc/docker /var/lib/docker /var/lib/containerd ~/.docker /etc/hysteria
+  rm -rf /lib/systemd/system/docker* /etc/systemd/system/docker* /usr/lib/systemd/system/docker*
+  rm -rf /run/docker* /run/containerd*
+
+  echo "🧹 卸载软件包..."
   apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
   apt autoremove -y >/dev/null 2>&1 || true
+
   systemctl daemon-reexec
   systemctl daemon-reload
-  echo "✅ Docker 已彻底卸载，无残留"
+  echo "✅ Docker 已彻底卸载"
+
+  # 验证残留
+  if command -v docker >/dev/null 2>&1; then
+    echo "⚠️ 检测到 docker 可执行文件，强制删除..."
+    rm -f "$(command -v docker)"
+  fi
+  echo "🎯 检查残留服务..."
+  systemctl list-unit-files | grep docker || echo "✅ 无 Docker 相关服务"
   pause
 }
 
