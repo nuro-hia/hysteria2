@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（内置 ACME + 自签证书 + 彻底卸载）
+# Hysteria 对接 XBoard 管理脚本（含彻底卸载版）
 # 版本：2025-10-30
 # =====================================================
 
@@ -28,7 +28,7 @@ header() {
   echo "=============================="
 }
 
-# ----------- URL 编码 -----------
+# ---------- URL 编码 ----------
 urlencode() {
   local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
@@ -41,7 +41,7 @@ urlencode() {
   echo "$output"
 }
 
-# ----------- 安装 Docker -----------
+# ---------- 安装 Docker ----------
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -67,7 +67,7 @@ install_docker() {
   fi
 }
 
-# ----------- 拉镜像安全 -----------
+# ---------- 拉镜像 ----------
 docker_pull_safe() {
   local image="$1"
   docker pull "$image" >/dev/null 2>&1 || {
@@ -77,13 +77,13 @@ docker_pull_safe() {
   }
 }
 
-# ----------- 安装 hysteria -----------
+# ---------- 安装 Hysteria ----------
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
 
   echo ""
-  read -rp "🌐 面板地址(如 https://mist.mistea.link): " API_HOST
+  read -rp "🌐 面板地址(Xboard 官网): " API_HOST
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
@@ -128,7 +128,7 @@ install_hysteria() {
   pause
 }
 
-# ----------- 删除容器与配置 -----------
+# ---------- 删除容器 ----------
 remove_container() {
   echo "⚠️ 确认删除容器与配置？(y/n)"
   read -r c
@@ -141,7 +141,7 @@ remove_container() {
   pause
 }
 
-# ----------- 更新镜像 -----------
+# ---------- 更新镜像 ----------
 update_image() {
   docker_pull_safe "$IMAGE"
   docker restart "$CONTAINER" || true
@@ -149,42 +149,44 @@ update_image() {
   pause
 }
 
-# ----------- 彻底卸载 Docker -----------
+# ---------- 卸载 Docker ----------
 uninstall_docker_all() {
-  echo "⚠️ 卸载 Docker 并彻底清理"
+  echo "⚠️ 卸载 Docker 与所有组件"
   read -rp "确认继续？(y/n): " c
   [[ ! $c =~ ^[Yy]$ ]] && pause && return
 
-  echo "🧹 停止所有 Docker 服务..."
-  systemctl stop docker docker.socket containerd 2>/dev/null || true
-  systemctl disable docker docker.socket containerd 2>/dev/null || true
-  pkill -9 docker dockerd containerd >/dev/null 2>&1 || true
-  umount -lf /run/docker/netns/default 2>/dev/null || true
+  sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
+  sudo docker rm -f $(sudo docker ps -aq) 2>/dev/null || true
+  sudo docker rmi -f $(sudo docker images -q) 2>/dev/null || true
+  sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
+  sudo docker network prune -f 2>/dev/null || true
 
-  echo "🧹 卸载所有相关包..."
-  apt purge -y docker docker.io docker-ce docker-ce-cli docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
-  apt autoremove -y >/dev/null 2>&1
-  apt clean -y >/dev/null 2>&1
+  if command -v apt-get &>/dev/null; then
+    sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
+    sudo apt-get autoremove -y --purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
+  elif command -v yum &>/dev/null; then
+    sudo systemctl stop docker 2>/dev/null
+    sudo yum remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
+  elif command -v dnf &>/dev/null; then
+    sudo systemctl stop docker 2>/dev/null
+    sudo dnf remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
+  fi
 
-  echo "🧹 删除所有文件和目录..."
-  rm -rf /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
-  rm -rf /run/docker* /run/containerd*
-  rm -rf /usr/bin/docker /usr/local/bin/docker* /usr/sbin/containerd
-  rm -rf /etc/systemd/system/docker* /lib/systemd/system/docker* /usr/lib/systemd/system/docker*
+  sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker
+  sudo rm -f /usr/local/bin/docker-compose
+  sudo pip uninstall -y docker-compose 2>/dev/null || true
 
-  echo "🧹 清理 socket..."
-  find /run /var/run -type s -name 'docker*.sock' -delete 2>/dev/null || true
-
-  echo "🧹 重载 systemd..."
-  systemctl daemon-reexec
-  systemctl daemon-reload
-  systemctl reset-failed
-
-  echo "✅ Docker 已彻底卸载"
+  if ! command -v docker &>/dev/null && ! command -v docker-compose &>/dev/null; then
+    echo "✅ Docker 与 docker-compose 已完全卸载！"
+  else
+    echo "⚠️ 仍检测到部分组件，请手动检查："
+    which docker || true
+    which docker-compose || true
+  fi
   pause
 }
 
-# ----------- 菜单 -----------
+# ---------- 菜单 ----------
 menu() {
   header
   read -rp "请选择操作: " opt
