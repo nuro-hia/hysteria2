@@ -1,36 +1,54 @@
 #!/bin/bash
 # ============================================================
-# Hysteria 对接 XBoard 一键部署脚本（清爽正式版）
-# 支持 cedar2025/hysteria 官方镜像
-# 作者: nuro
+# Hysteria 对接 XBoard 一键部署脚本（终极稳定版）
+# 兼容 cedar2025/hysteria 官方镜像
+# 自动检测 docker compose / docker-compose
 # ============================================================
 
 set -e
 CONFIG_DIR="/etc/hysteria"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 
-# ------------------------------------------------------------
-# Docker & Compose 检查
-# ------------------------------------------------------------
+# 自动检测 compose 命令
+detect_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+  elif docker-compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker-compose"
+  else
+    echo "📦 未检测到 Docker Compose，正在安装..."
+    apt update -y >/dev/null 2>&1
+    apt install -y docker-compose-plugin docker-compose >/dev/null 2>&1
+    if docker compose version >/dev/null 2>&1; then
+      COMPOSE_CMD="docker compose"
+    else
+      COMPOSE_CMD="docker-compose"
+    fi
+  fi
+}
+
+# 安装 Docker
 install_docker() {
   if ! command -v docker >/dev/null 2>&1; then
-    echo "📦 未检测到 Docker，正在安装..."
+    echo "🐳 未检测到 Docker，正在安装..."
     apt update -y >/dev/null 2>&1
     apt install -y curl ca-certificates gnupg lsb-release >/dev/null 2>&1
     curl -fsSL https://get.docker.com | bash >/dev/null 2>&1
     systemctl enable docker --now >/dev/null 2>&1
     echo "✅ Docker 安装完成"
   fi
-
-  if ! docker compose version >/dev/null 2>&1; then
-    echo "📦 安装 Docker Compose 插件..."
-    apt install -y docker-compose-plugin >/dev/null 2>&1
-  fi
+  detect_compose
 }
 
-# ------------------------------------------------------------
-# 菜单显示
-# ------------------------------------------------------------
+pause() {
+  echo ""
+  read -rp "按回车返回菜单..." _
+  menu
+}
+
+# ------------------------------
+# 菜单
+# ------------------------------
 menu() {
   clear
   echo "=============================="
@@ -48,10 +66,10 @@ menu() {
   read -rp "请选择操作: " choice
   case $choice in
     1) install_hysteria ;;
-    2) docker compose -f ${COMPOSE_FILE} restart; pause ;;
-    3) docker compose -f ${COMPOSE_FILE} down; pause ;;
+    2) ${COMPOSE_CMD} -f ${COMPOSE_FILE} restart || echo "未找到容器"; pause ;;
+    3) ${COMPOSE_CMD} -f ${COMPOSE_FILE} down || echo "未找到容器"; pause ;;
     4) remove_all ;;
-    5) docker logs -f hysteria; pause ;;
+    5) docker logs -f hysteria || echo "未找到容器"; pause ;;
     6) update_image ;;
     7) uninstall_all ;;
     8) exit 0 ;;
@@ -59,15 +77,9 @@ menu() {
   esac
 }
 
-pause() {
-  echo ""
-  read -rp "按回车返回菜单..." _
-  menu
-}
-
-# ------------------------------------------------------------
-# 安装与部署
-# ------------------------------------------------------------
+# ------------------------------
+# 安装部署
+# ------------------------------
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -80,7 +92,7 @@ install_hysteria() {
   read -rp "监听端口 (默认36024): " PORT
   PORT=${PORT:-36024}
 
-  # 写入配置文件
+  # server.yaml
   cat > ${CONFIG_DIR}/server.yaml <<EOF
 v2board:
   apiHost: ${API_HOST}
@@ -109,7 +121,7 @@ acl:
 listen: :${PORT}
 EOF
 
-  # docker-compose
+  # docker-compose.yml
   cat > ${COMPOSE_FILE} <<EOF
 version: "3"
 services:
@@ -130,8 +142,9 @@ EOF
     -out ${CONFIG_DIR}/fullchain.pem \
     -subj "/CN=${DOMAIN}" >/dev/null 2>&1
   echo "✅ 证书生成成功"
+
   echo "🐳 启动容器..."
-  docker compose -f ${COMPOSE_FILE} up -d
+  ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
 
   echo ""
   echo "✅ 部署完成"
@@ -143,19 +156,21 @@ EOF
   pause
 }
 
-# ------------------------------------------------------------
+# ------------------------------
 # 删除与更新
-# ------------------------------------------------------------
+# ------------------------------
 remove_all() {
-  docker compose -f ${COMPOSE_FILE} down --rmi all -v --remove-orphans || true
+  detect_compose
+  ${COMPOSE_CMD} -f ${COMPOSE_FILE} down --rmi all -v --remove-orphans || true
   rm -rf ${CONFIG_DIR}
   echo "✅ 已删除容器与配置"
   pause
 }
 
 update_image() {
+  detect_compose
   docker pull ghcr.io/cedar2025/hysteria:latest
-  docker compose -f ${COMPOSE_FILE} up -d
+  ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
   echo "✅ 镜像已更新"
   pause
 }
@@ -164,7 +179,8 @@ uninstall_all() {
   echo "⚠️ 该操作将卸载 Hysteria 与 Docker"
   read -rp "是否继续? y/n: " confirm
   if [[ $confirm =~ ^[Yy]$ ]]; then
-    docker compose -f ${COMPOSE_FILE} down --rmi all -v --remove-orphans || true
+    detect_compose
+    ${COMPOSE_CMD} -f ${COMPOSE_FILE} down --rmi all -v --remove-orphans || true
     docker rm -f hysteria >/dev/null 2>&1 || true
     docker rmi ghcr.io/cedar2025/hysteria:latest >/dev/null 2>&1 || true
     rm -rf ${CONFIG_DIR}
