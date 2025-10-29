@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Hysteria + Xboard 一键部署与管理脚本（最终版）
+# Hysteria + Xboard 一键部署与管理脚本（自动域名邮箱版）
 # 作者: nuro
 # 仓库: https://github.com/nuro-hia/hysteria2
 # ============================================================
@@ -9,7 +9,7 @@ set -e
 CONFIG_DIR="/etc/hysteria"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 
-# 检查 Docker 是否存在
+# 🐳 检查 Docker
 check_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "🐳 未检测到 Docker，正在自动安装..."
@@ -20,20 +20,17 @@ check_docker() {
   fi
 }
 
-# 检查 acme.sh
+# 📦 检查 acme.sh
 check_acme() {
   if [ ! -d "/root/.acme.sh" ]; then
     echo "📦 正在安装 acme.sh ..."
     (curl -fsSL https://get.acme.sh | sh) >/dev/null 2>&1
   fi
-
-  if [ ! -f "/root/.acme.sh/account.conf" ]; then
-    echo "📧 注册默认邮箱 no-reply@autogen.local ..."
-    /root/.acme.sh/acme.sh --register-account -m no-reply@autogen.local >/dev/null 2>&1 || true
-  fi
 }
 
-# 菜单
+# ========================
+# 主菜单
+# ========================
 menu() {
   clear
   echo "=============================="
@@ -60,7 +57,9 @@ menu() {
   esac
 }
 
-# 安装与部署
+# ========================
+# 安装部署流程
+# ========================
 install_hysteria() {
   check_docker
   check_acme
@@ -74,6 +73,17 @@ install_hysteria() {
   PORT=${PORT:-36024}
 
   mkdir -p "$CONFIG_DIR"
+
+  # 从域名生成合法邮箱
+  ROOT_DOMAIN=$(echo "$DOMAIN" | awk -F'.' '{print $(NF-1)"."$NF}')
+  EMAIL="admin@${ROOT_DOMAIN}"
+
+  echo "📧 自动生成邮箱：${EMAIL}"
+
+  # 注册 acme.sh 邮箱（只注册一次）
+  if [ ! -f "/root/.acme.sh/account.conf" ]; then
+    /root/.acme.sh/acme.sh --register-account -m ${EMAIL} >/dev/null 2>&1 || true
+  fi
 
   # 写入配置文件
   cat > ${CONFIG_DIR}/server.yaml <<EOF
@@ -118,7 +128,6 @@ services:
     command: server -c /etc/hysteria/server.yaml
 EOF
 
-  # 申请证书
   echo "🔒 检查证书 ..."
   if [[ ! -f "${CONFIG_DIR}/fullchain.pem" || ! -f "${CONFIG_DIR}/privkey.pem" ]]; then
     echo "📜 正在申请证书 ${DOMAIN} ..."
@@ -141,12 +150,16 @@ EOF
   echo "⚙️ 监听端口: ${PORT} (UDP)"
   echo "🌐 面板: ${API_HOST}"
   echo "🆔 节点ID: ${NODE_ID}"
+  echo "📧 注册邮箱: ${EMAIL}"
   echo "--------------------------------------"
   echo "日志查看: docker logs -f hysteria"
   sleep 2
   menu
 }
 
+# ========================
+# 其他操作
+# ========================
 restart_hysteria() {
   check_docker
   echo "🔄 正在重启容器 ..."
