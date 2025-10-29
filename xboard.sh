@@ -1,15 +1,15 @@
 #!/bin/bash
 # ============================================================
-# Hysteria 对接 XBoard 一键部署脚本（PRO版）
+# Hysteria 对接 XBoard 极简快速部署版（官方 run 模式）
 # 作者: nuro
-# 更新: 2025-10-30
-# 特点: 菜单无emoji, 执行过程含emoji, 智能卸载逻辑, 自动重试镜像下载
+# 日期: 2025-10-30
+# 特点: 无 docker-compose，纯 docker run + 自签证书
 # ============================================================
 
 set -e
 CONFIG_DIR="/etc/hysteria"
-COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
-COMPOSE_CMD=""
+IMAGE_NAME="ghcr.io/cedar2025/hysteria:latest"
+CONTAINER_NAME="hysteria"
 
 install_docker() {
   echo "🧩 检查 Docker 环境..."
@@ -21,56 +21,37 @@ install_docker() {
   else
     echo "✅ 已检测到 Docker"
   fi
-
-  if docker compose version >/dev/null 2>&1; then
-    COMPOSE_CMD="docker compose"
-  elif docker-compose version >/dev/null 2>&1; then
-    COMPOSE_CMD="docker-compose"
-  else
-    echo "📦 安装 Docker Compose 插件..."
-    apt update -y && apt install -y docker-compose-plugin docker-compose
-    if docker compose version >/dev/null 2>&1; then
-      COMPOSE_CMD="docker compose"
-    else
-      COMPOSE_CMD="docker-compose"
-    fi
-  fi
-  echo "✅ 使用 Compose 命令: ${COMPOSE_CMD}"
-}
-
-pause() {
-  echo ""
-  read -rp "按回车返回菜单..." _
-  menu
 }
 
 menu() {
   clear
   echo "=============================="
-  echo " Hysteria 对接 XBoard 管理脚本"
+  echo " Hysteria 对接 XBoard 快速脚本"
   echo "=============================="
-  echo "1 安装并部署 Hysteria"
+  echo "1 安装并启动 Hysteria"
   echo "2 重启容器"
   echo "3 停止容器"
   echo "4 删除容器与配置"
   echo "5 查看运行日志"
   echo "6 更新镜像"
-  echo "7 卸载全部"
+  echo "7 卸载 Docker 全部"
   echo "8 退出"
   echo "=============================="
-  read -rp "请选择操作: " choice
-  case $choice in
+  read -rp "请选择操作: " opt
+  case "$opt" in
     1) install_hysteria ;;
-    2) ${COMPOSE_CMD} -f ${COMPOSE_FILE} restart || echo "⚠️ 未找到容器"; pause ;;
-    3) ${COMPOSE_CMD} -f ${COMPOSE_FILE} down || echo "⚠️ 未找到容器"; pause ;;
-    4) remove_hysteria ;;
-    5) docker logs -f hysteria || echo "⚠️ 未找到容器"; pause ;;
-    6) update_image ;;
+    2) docker restart $CONTAINER_NAME || echo "⚠️ 未找到容器"; pause ;;
+    3) docker stop $CONTAINER_NAME || echo "⚠️ 未找到容器"; pause ;;
+    4) remove_all ;;
+    5) docker logs -f $CONTAINER_NAME || echo "⚠️ 未找到容器"; pause ;;
+    6) docker pull $IMAGE_NAME && docker restart $CONTAINER_NAME; pause ;;
     7) uninstall_all ;;
     8) exit 0 ;;
     *) echo "❌ 无效选项"; sleep 1; menu ;;
   esac
 }
+
+pause() { echo ""; read -rp "按回车返回菜单..." _; menu; }
 
 install_hysteria() {
   install_docker
@@ -81,115 +62,61 @@ install_hysteria() {
   read -rp "🔑 通讯密钥: " API_KEY
   read -rp "🆔 节点 ID: " NODE_ID
   read -rp "🏷️  节点域名 (证书 CN): " DOMAIN
-  read -rp "📡 监听端口 (默认36024): " PORT
-  PORT=${PORT:-36024}
 
-  cat > ${CONFIG_DIR}/server.yaml <<EOF
-v2board:
-  apiHost: ${API_HOST}
-  apiKey: ${API_KEY}
-  nodeID: ${NODE_ID}
-
-tls:
-  type: tls
-  cert: /etc/hysteria/fullchain.pem
-  key: /etc/hysteria/privkey.pem
-
-auth:
-  type: v2board
-
-trafficStats:
-  listen: 127.0.0.1:7653
-
-acl:
-  inline:
-    - reject(10.0.0.0/8)
-    - reject(172.16.0.0/12)
-    - reject(192.168.0.0/16)
-    - reject(127.0.0.0/8)
-    - reject(fc00::/7)
-
-listen: :${PORT}
-EOF
-
-  cat > ${COMPOSE_FILE} <<EOF
-version: "3"
-services:
-  hysteria:
-    image: ghcr.io/cedar2025/hysteria:latest
-    container_name: hysteria
-    restart: unless-stopped
-    network_mode: "host"
-    volumes:
-      - ${CONFIG_DIR}:/etc/hysteria
-    command: hysteria server -c /etc/hysteria/server.yaml
-EOF
+  CERT_FILE="${CONFIG_DIR}/tls.crt"
+  KEY_FILE="${CONFIG_DIR}/tls.key"
 
   echo ""
-  echo "📜 正在生成自签证书..."
+  echo "📜 生成自签证书..."
   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout ${CONFIG_DIR}/privkey.pem \
-    -out ${CONFIG_DIR}/fullchain.pem \
+    -keyout "$KEY_FILE" -out "$CERT_FILE" \
     -subj "/CN=${DOMAIN}" >/dev/null 2>&1
   echo "✅ 证书生成成功"
 
-  echo ""
-  echo "🐳 启动容器..."
-  if ! ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d; then
-    echo "⚠️ 拉取镜像失败，清理缓存后重试..."
-    rm -rf /var/lib/docker/tmp/* || true
-    ${COMPOSE_CMD} -f ${COMPOSE_FILE} pull
-    ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
-  fi
+  echo "🐳 启动 Hysteria 容器..."
+  docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
+  docker run -itd --restart=always --network=host \
+    -v "${CERT_FILE}:/etc/hysteria/tls.crt" \
+    -v "${KEY_FILE}:/etc/hysteria/tls.key" \
+    -e apiHost="${API_HOST}" \
+    -e apiKey="${API_KEY}" \
+    -e nodeID="${NODE_ID}" \
+    -e domain="${DOMAIN}" \
+    --name "${CONTAINER_NAME}" \
+    "${IMAGE_NAME}"
 
   echo ""
   echo "✅ 部署完成"
   echo "--------------------------------------"
-  echo "📄 配置文件: /etc/hysteria/server.yaml"
-  echo "🔐 证书文件: ${CONFIG_DIR}/fullchain.pem"
-  echo "📡 监听端口: ${PORT} (UDP)"
+  echo "📄 证书文件: ${CERT_FILE}"
+  echo "📡 容器名称: ${CONTAINER_NAME}"
+  echo "🌍 面板地址: ${API_HOST}"
   echo "--------------------------------------"
   pause
 }
 
-remove_hysteria() {
-  echo "⚠️ 确认要删除 Hysteria 容器与配置吗？"
-  read -rp "输入 y 继续: " confirm
-  if [[ $confirm =~ ^[Yy]$ ]]; then
-    ${COMPOSE_CMD} -f ${COMPOSE_FILE} down --rmi all -v --remove-orphans || true
-    docker rm -f hysteria >/dev/null 2>&1 || true
-    docker rmi ghcr.io/cedar2025/hysteria:latest >/dev/null 2>&1 || true
-    rm -rf ${CONFIG_DIR}
+remove_all() {
+  echo "⚠️ 确认要删除 Hysteria 容器与配置？"
+  read -rp "输入 y 继续: " c
+  if [[ $c =~ ^[Yy]$ ]]; then
+    docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
+    docker rmi $IMAGE_NAME >/dev/null 2>&1 || true
+    rm -rf "$CONFIG_DIR"
     echo "✅ 已删除容器与配置"
   fi
   pause
 }
 
-update_image() {
-  docker pull ghcr.io/cedar2025/hysteria:latest
-  ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
-  echo "✅ 镜像已更新"
-  pause
-}
-
 uninstall_all() {
-  echo "⚠️ 将卸载 Hysteria 容器与 Docker"
-  read -rp "确认继续? y/n: " confirm
-  if [[ $confirm =~ ^[Yy]$ ]]; then
-    echo "🗑️ 正在清理 Hysteria..."
-    docker rm -f hysteria >/dev/null 2>&1 || true
-    docker rmi ghcr.io/cedar2025/hysteria:latest >/dev/null 2>&1 || true
-    rm -rf ${CONFIG_DIR}
-
-    local other=$(docker ps -aq | grep -v "$(docker ps -aq --filter name=hysteria)" || true)
-    if [[ -z "$other" ]]; then
-      echo "🧹 未检测到其他容器，开始卸载 Docker..."
-      apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1
-      rm -rf /var/lib/docker /var/lib/containerd /etc/docker
-      echo "✅ 已彻底卸载所有组件"
-    else
-      echo "⚙️ 检测到其他容器存在，已保留 Docker 环境"
-    fi
+  echo "⚠️ 卸载 Docker 全部组件"
+  read -rp "确认继续? y/n: " c
+  if [[ $c =~ ^[Yy]$ ]]; then
+    docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
+    docker rmi $IMAGE_NAME >/dev/null 2>&1 || true
+    rm -rf "$CONFIG_DIR"
+    apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1
+    rm -rf /var/lib/docker /var/lib/containerd /etc/docker
+    echo "✅ 已彻底卸载 Docker 及所有组件"
   fi
   pause
 }
