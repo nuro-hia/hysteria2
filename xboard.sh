@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（自签证书稳定版）
+# Hysteria 对接 XBoard 管理脚本（内置 ACME 自动签发版）
 # 作者: nuro | 日期: 2025-10-30
 # =====================================================
 
@@ -51,18 +51,6 @@ install_docker() {
   fix_docker_tmp
 }
 
-gen_self_signed_cert() {
-  local domain="$1"
-  mkdir -p "$CONFIG_DIR"
-  echo "📜 正在生成自签证书 (${domain})..."
-  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout "${CONFIG_DIR}/tls.key" \
-    -out "${CONFIG_DIR}/tls.crt" \
-    -subj "/CN=${domain}" >/dev/null 2>&1
-  chmod 600 "${CONFIG_DIR}/tls.key"
-  echo "✅ 证书生成成功：${CONFIG_DIR}/tls.crt"
-}
-
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -72,21 +60,21 @@ install_hysteria() {
   read -rp "🔑 通讯密钥(apiKey): " API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
+  read -rp "📧 ACME 注册邮箱(可随意填写): " ACME_EMAIL
 
-  gen_self_signed_cert "${DOMAIN}"
-
-  echo "🐳 启动 Hysteria 容器..."
+  echo ""
+  echo "📜 使用 Hysteria 内置 ACME 自动申请证书..."
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker pull "$IMAGE" || true
+
   docker run -itd --restart=always --network=host \
-    -v "${CONFIG_DIR}/tls.crt:/etc/hysteria/tls.crt" \
-    -v "${CONFIG_DIR}/tls.key:/etc/hysteria/tls.key" \
+    -v "${CONFIG_DIR}:/etc/hysteria" \
     -e apiHost="${API_HOST}" \
     -e apiKey="${API_KEY}" \
     -e nodeID="${NODE_ID}" \
     -e domain="${DOMAIN}" \
-    -e acmeEmail="disabled" \
-    -e acmeDomains="" \
+    -e acmeDomains="${DOMAIN}" \
+    -e acmeEmail="${ACME_EMAIL}" \
     --name "${CONTAINER}" \
     "${IMAGE}"
 
@@ -97,8 +85,12 @@ install_hysteria() {
   echo "🔑 通讯密钥: ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
-  echo "📜 证书文件: ${CONFIG_DIR}/tls.crt"
+  echo "📧 ACME 邮箱: ${ACME_EMAIL}"
   echo "🐳 容器名称: ${CONTAINER}"
+  echo "--------------------------------------"
+  echo ""
+  echo "⚠️ 请确保端口 80 和 443 未被其他服务占用"
+  echo "⚠️ 若证书申请失败，请关闭 nginx、caddy、bt 面板等占用 80/443 的进程"
   echo "--------------------------------------"
   pause
 }
@@ -126,16 +118,35 @@ uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 及全部组件"
   read -rp "确认继续？(y/n): " c
   if [[ $c =~ ^[Yy]$ ]]; then
-    echo "🧹 停止所有容器..."
-    docker stop $(docker ps -aq) >/dev/null 2>&1 || true
-    echo "🧹 删除容器与镜像..."
-    docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
-    docker rmi -f $(docker images -q) >/dev/null 2>&1 || true
-    echo "🧹 删除配置与服务..."
-    rm -rf "$CONFIG_DIR" /var/lib/docker /var/lib/containerd /etc/docker
-    apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
-    apt autoremove -y >/dev/null 2>&1
-    systemctl disable docker >/dev/null 2>&1 || true
+    echo "🧹 停止服务（含 socket）..."
+    systemctl stop docker docker.socket containerd || true
+    pkill -f dockerd || true
+    pkill -f containerd || true
+
+    echo "🧹 清理容器/镜像/卷/网络..."
+    systemctl start docker || true
+    docker stop $(docker ps -aq) 2>/dev/null || true
+    docker rm -f $(docker ps -aq) 2>/dev/null || true
+    docker rmi -f $(docker images -aq) 2>/dev/null || true
+    docker volume rm $(docker volume ls -q) 2>/dev/null || true
+    docker network rm $(docker network ls -q | grep -vE '(^ID$|^NAME$|bridge|host|none)') 2>/dev/null || true
+    docker system prune -af --volumes 2>/dev/null || true
+
+    echo "🧹 停止并禁用/屏蔽 docker 与 containerd..."
+    systemctl stop docker docker.socket containerd || true
+    systemctl disable docker docker.socket containerd || true
+    systemctl mask docker docker.socket containerd || true
+
+    echo "🧹 删除数据与配置目录..."
+    rm -rf /etc/hysteria
+    rm -rf /var/lib/docker /var/lib/containerd /etc/docker
+    rm -rf ~/.docker
+
+    echo "🧹 卸载相关包..."
+    apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
+    apt autoremove -y >/dev/null 2>&1 || true
+    systemctl daemon-reload
+
     echo "✅ 已彻底卸载 Docker 与 Hysteria 所有组件"
   fi
   pause
