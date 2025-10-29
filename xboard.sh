@@ -2,7 +2,6 @@
 # =====================================================
 # Hysteria 对接 XBoard 管理脚本（内置 ACME + 自签证书 + 强力卸载 + 临时目录修复）
 # 版本: 2025-10-30
-# 注意：菜单不带 emoji，提示可带 emoji
 # =====================================================
 
 set -euo pipefail
@@ -29,7 +28,7 @@ header() {
   echo "=============================="
 }
 
-# URL 编码（避免 apiKey 中 #%&? 等导致请求报错）
+# URL 编码防止特殊字符导致请求错误
 urlencode() {
   local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
@@ -42,7 +41,7 @@ urlencode() {
   echo "$output"
 }
 
-# 修复 docker 的 tmp 目录问题并强制重载服务（修复 GetImageBlob 错误）
+# 修复 Docker 临时目录（解决 GetImageBlob 报错）
 fix_docker_tmp() {
   local root_dir
   root_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
@@ -56,23 +55,21 @@ fix_docker_tmp() {
   systemctl start docker 2>/dev/null || true
 }
 
-# 安装并确保 docker 可用
+# 安装并确保 Docker 可用（静默安装）
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
-    echo "🐳 未检测到 Docker，正在安装..."
-    curl -fsSL https://get.docker.com | bash
+    echo "🐳 未检测到 Docker，正在静默安装..."
+    curl -fsSL https://get.docker.com | bash >/dev/null 2>&1
   else
     echo "✅ 已检测到 Docker"
   fi
 
-  # 解除 mask 并确保运行
   systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
   systemctl enable docker.socket >/dev/null 2>&1 || true
   systemctl start docker.socket >/dev/null 2>&1 || true
   systemctl start docker >/dev/null 2>&1 || true
 
-  # 若还不可用，尝试修复
   if ! docker ps >/dev/null 2>&1; then
     echo "⚙️ 修复 Docker 服务状态..."
     systemctl daemon-reexec
@@ -81,7 +78,6 @@ install_docker() {
     systemctl restart docker 2>/dev/null || true
   fi
 
-  # 再不行就修 tmp 并再试
   if ! docker ps >/dev/null 2>&1; then
     fix_docker_tmp
   fi
@@ -89,21 +85,22 @@ install_docker() {
   if docker ps >/dev/null 2>&1; then
     echo "✅ Docker 已正常运行"
   else
-    echo "❌ Docker 无法启动，请检查系统日志：journalctl -u docker -e"
+    echo "❌ Docker 启动失败，请手动检查日志：journalctl -u docker -e"
     exit 1
   fi
 }
 
-# 拉镜像（失败则自动修 tmp 并重试一次）
+# 拉镜像（失败则自动修 tmp 并重试）
 docker_pull_safe() {
   local image="$1"
-  if ! docker pull "$image"; then
+  if ! docker pull "$image" >/dev/null 2>&1; then
     echo "⚠️ 拉取镜像失败，尝试修复 Docker 临时目录后重试..."
     fix_docker_tmp
     docker pull "$image"
   fi
 }
 
+# 主安装逻辑
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -116,20 +113,15 @@ install_hysteria() {
   read -rp "📧 ACME 注册邮箱(默认: ${DEFAULT_EMAIL}): " EMAIL
   EMAIL=${EMAIL:-$DEFAULT_EMAIL}
 
-  # URL 编码 token
   API_KEY=$(urlencode "$RAW_API_KEY")
 
-  # 先生成自签证书（容器若配置了 ACME 会忽略本地证书；但自签可立即启动）
   echo "📜 生成自签证书..."
   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
     -subj "/CN=${DOMAIN}" >/dev/null 2>&1 || true
   echo "✅ 自签证书生成成功"
 
-  # 清旧容器
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-
-  # 拉镜像（含临时目录修复）
   docker_pull_safe "$IMAGE"
 
   echo "🐳 启动 Hysteria 容器..."
@@ -144,7 +136,7 @@ install_hysteria() {
     -e tlsCert="/etc/hysteria/tls.crt" \
     -e tlsKey="/etc/hysteria/tls.key" \
     --name "${CONTAINER}" \
-    "${IMAGE}"
+    "${IMAGE}" >/dev/null 2>&1
 
   echo ""
   echo "✅ 部署完成"
@@ -197,7 +189,7 @@ uninstall_docker_all() {
     docker rm -f $(docker ps -aq) 2>/dev/null || true
     docker rmi -f $(docker images -aq) 2>/dev/null || true
     docker volume rm $(docker volume ls -q) 2>/dev/null || true
-    docker network rm $(docker network ls -q | grep -vE '(^ID$|^NAME$|bridge|host|none)') 2>/dev/null || true
+    docker network rm $(docker network ls -q | grep -vE '(^ID$|bridge|host|none)') 2>/dev/null || true
     docker system prune -af --volumes 2>/dev/null || true
   fi
 
@@ -212,7 +204,6 @@ uninstall_docker_all() {
   systemctl daemon-reexec
   systemctl daemon-reload
 
-  # 清理 docker 可执行文件残留（某些环境仍有 /usr/bin/docker）
   if command -v docker >/dev/null 2>&1; then
     echo "🧹 移除 docker 可执行文件..."
     rm -f "$(command -v docker)" 2>/dev/null || true
