@@ -1,13 +1,15 @@
 #!/bin/bash
 # =====================================================
-# 🌀 Hysteria 对接 XBoard 管理脚本（内置自签证书 + 完整卸载Docker）
-# 作者: nuro | 版本: 2025-10-30
+# Hysteria 对接 XBoard 管理脚本（内置 ACME + 自签证书 + 强力卸载 + 临时目录修复）
+# 版本: 2025-10-30
+# 注意：菜单不带 emoji，提示可带 emoji
 # =====================================================
 
-set -e
+set -euo pipefail
 CONFIG_DIR="/etc/hysteria"
 IMAGE="ghcr.io/cedar2025/hysteria:latest"
 CONTAINER="hysteria"
+DEFAULT_EMAIL="his666@outlook.com"
 
 pause() { echo ""; read -rp "按回车返回菜单..." _; menu; }
 
@@ -27,14 +29,12 @@ header() {
   echo "=============================="
 }
 
-# -------------------------------
-# URL 编码函数
-# -------------------------------
+# URL 编码（避免 apiKey 中 #%&? 等导致请求报错）
 urlencode() {
   local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
     c=${data:$i:1}
-    case $c in
+    case "$c" in
       [a-zA-Z0-9.~_-]) output+="$c" ;;
       *) printf -v hex '%%%02X' "'$c"; output+="$hex" ;;
     esac
@@ -42,9 +42,21 @@ urlencode() {
   echo "$output"
 }
 
-# -------------------------------
-# 安装 Docker
-# -------------------------------
+# 修复 docker 的 tmp 目录问题并强制重载服务（修复 GetImageBlob 错误）
+fix_docker_tmp() {
+  local root_dir
+  root_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
+  echo "🛠️ 修复 Docker 临时目录: ${root_dir}/tmp"
+  systemctl stop docker 2>/dev/null || true
+  mkdir -p "${root_dir}/tmp"
+  chmod 1777 "${root_dir}/tmp"
+  rm -rf "${root_dir}/tmp/"* 2>/dev/null || true
+  export DOCKER_TMPDIR="${root_dir}/tmp"
+  systemctl restart containerd 2>/dev/null || true
+  systemctl start docker 2>/dev/null || true
+}
+
+# 安装并确保 docker 可用
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -54,26 +66,44 @@ install_docker() {
     echo "✅ 已检测到 Docker"
   fi
 
-  # 修复 masked 状态
+  # 解除 mask 并确保运行
   systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
   systemctl enable docker.socket >/dev/null 2>&1 || true
   systemctl start docker.socket >/dev/null 2>&1 || true
   systemctl start docker >/dev/null 2>&1 || true
 
+  # 若还不可用，尝试修复
   if ! docker ps >/dev/null 2>&1; then
     echo "⚙️ 修复 Docker 服务状态..."
     systemctl daemon-reexec
     systemctl daemon-reload
-    systemctl restart docker.socket || true
-    systemctl restart docker || true
+    systemctl restart docker.socket 2>/dev/null || true
+    systemctl restart docker 2>/dev/null || true
   fi
 
-  docker ps >/dev/null 2>&1 && echo "✅ Docker 已正常运行"
+  # 再不行就修 tmp 并再试
+  if ! docker ps >/dev/null 2>&1; then
+    fix_docker_tmp
+  fi
+
+  if docker ps >/dev/null 2>&1; then
+    echo "✅ Docker 已正常运行"
+  else
+    echo "❌ Docker 无法启动，请检查系统日志：journalctl -u docker -e"
+    exit 1
+  fi
 }
 
-# -------------------------------
-# 安装 Hysteria
-# -------------------------------
+# 拉镜像（失败则自动修 tmp 并重试一次）
+docker_pull_safe() {
+  local image="$1"
+  if ! docker pull "$image"; then
+    echo "⚠️ 拉取镜像失败，尝试修复 Docker 临时目录后重试..."
+    fix_docker_tmp
+    docker pull "$image"
+  fi
+}
+
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -83,18 +113,24 @@ install_hysteria() {
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  read -rp "📧 ACME 注册邮箱(可随意填写): " EMAIL
+  read -rp "📧 ACME 注册邮箱(默认: ${DEFAULT_EMAIL}): " EMAIL
+  EMAIL=${EMAIL:-$DEFAULT_EMAIL}
 
+  # URL 编码 token
   API_KEY=$(urlencode "$RAW_API_KEY")
 
+  # 先生成自签证书（容器若配置了 ACME 会忽略本地证书；但自签可立即启动）
   echo "📜 生成自签证书..."
   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
-    -subj "/CN=${DOMAIN}" >/dev/null 2>&1
+    -subj "/CN=${DOMAIN}" >/dev/null 2>&1 || true
   echo "✅ 自签证书生成成功"
 
+  # 清旧容器
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  docker pull "$IMAGE" || true
+
+  # 拉镜像（含临时目录修复）
+  docker_pull_safe "$IMAGE"
 
   echo "🐳 启动 Hysteria 容器..."
   docker run -itd --restart=always --network=host \
@@ -103,6 +139,7 @@ install_hysteria() {
     -e apiKey="${API_KEY}" \
     -e nodeID="${NODE_ID}" \
     -e domain="${DOMAIN}" \
+    -e acmeDomains="${DOMAIN}" \
     -e acmeEmail="${EMAIL}" \
     -e tlsCert="/etc/hysteria/tls.crt" \
     -e tlsKey="/etc/hysteria/tls.key" \
@@ -116,15 +153,13 @@ install_hysteria() {
   echo "🔑 通讯密钥(已编码): ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
+  echo "📧 ACME 邮箱: ${EMAIL}"
   echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
   pause
 }
 
-# -------------------------------
-# 删除容器与配置
-# -------------------------------
 remove_container() {
   echo "⚠️ 确认删除 Hysteria 容器与配置？"
   read -rp "输入 y 继续: " c
@@ -137,19 +172,13 @@ remove_container() {
   pause
 }
 
-# -------------------------------
-# 更新镜像
-# -------------------------------
 update_image() {
-  docker pull "$IMAGE"
+  docker_pull_safe "$IMAGE"
   docker restart "$CONTAINER" || true
   echo "✅ 镜像已更新并重启"
   pause
 }
 
-# -------------------------------
-# 完整卸载 Docker
-# -------------------------------
 uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 及全部组件"
   read -rp "确认继续？(y/n): " c
@@ -162,36 +191,34 @@ uninstall_docker_all() {
   pkill -f dockerd 2>/dev/null || true
   pkill -f containerd 2>/dev/null || true
 
-  echo "🧹 删除容器、镜像、卷、网络..."
+  echo "🧹 删除容器/镜像/卷/网络..."
   if command -v docker >/dev/null 2>&1; then
     docker stop $(docker ps -aq) 2>/dev/null || true
     docker rm -f $(docker ps -aq) 2>/dev/null || true
     docker rmi -f $(docker images -aq) 2>/dev/null || true
     docker volume rm $(docker volume ls -q) 2>/dev/null || true
-    docker network rm $(docker network ls -q | grep -vE 'bridge|host|none') 2>/dev/null || true
+    docker network rm $(docker network ls -q | grep -vE '(^ID$|^NAME$|bridge|host|none)') 2>/dev/null || true
     docker system prune -af --volumes 2>/dev/null || true
   fi
 
-  echo "🧹 清理所有文件..."
-  rm -rf /etc/docker /var/lib/docker /var/lib/containerd ~/.docker /etc/hysteria
-  rm -rf /lib/systemd/system/docker* /etc/systemd/system/docker* /usr/lib/systemd/system/docker*
+  echo "🧹 清理文件与目录..."
+  rm -rf /etc/hysteria /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
   rm -rf /run/docker* /run/containerd*
+  rm -rf /lib/systemd/system/docker* /etc/systemd/system/docker* /usr/lib/systemd/system/docker*
 
-  echo "🧹 卸载软件包..."
+  echo "🧹 卸载相关包..."
   apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
   apt autoremove -y >/dev/null 2>&1 || true
-
   systemctl daemon-reexec
   systemctl daemon-reload
-  echo "✅ Docker 已彻底卸载"
 
-  # 验证残留
+  # 清理 docker 可执行文件残留（某些环境仍有 /usr/bin/docker）
   if command -v docker >/dev/null 2>&1; then
-    echo "⚠️ 检测到 docker 可执行文件，强制删除..."
-    rm -f "$(command -v docker)"
+    echo "🧹 移除 docker 可执行文件..."
+    rm -f "$(command -v docker)" 2>/dev/null || true
   fi
-  echo "🎯 检查残留服务..."
-  systemctl list-unit-files | grep docker || echo "✅ 无 Docker 相关服务"
+
+  echo "✅ Docker 已彻底卸载，无残留"
   pause
 }
 
