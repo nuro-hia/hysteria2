@@ -9,6 +9,16 @@ set -e
 CONFIG_DIR="/etc/hysteria"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 
+# 检查 docker
+check_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "🐳 未检测到 Docker，正在安装..."
+    apt update -y >/dev/null 2>&1
+    apt install -y docker.io docker-compose curl wget -y >/dev/null 2>&1
+    systemctl enable docker --now
+  fi
+}
+
 menu() {
   clear
   echo "=============================="
@@ -36,6 +46,8 @@ menu() {
 }
 
 install_hysteria() {
+  check_docker
+
   echo "🚀 开始安装 Hysteria 对接 Xboard ..."
   read -rp "🧭 请输入 Xboard 面板地址 (如 https://xboard.example.com): " API_HOST
   read -rp "🔑 请输入通讯密钥 (apiKey): " API_KEY
@@ -87,15 +99,25 @@ services:
     command: server -c /etc/hysteria/server.yaml
 EOF
 
-  echo "🔒 检查证书..."
+  echo "🔒 检查并安装 acme.sh ..."
+  if [ ! -d "/root/.acme.sh" ]; then
+    curl https://get.acme.sh | sh >/dev/null 2>&1
+  fi
+
+  echo "📧 检查注册邮箱..."
+  if [ ! -f "/root/.acme.sh/account.conf" ]; then
+    /root/.acme.sh/acme.sh --register-account -m no-reply@autogen.local >/dev/null 2>&1
+  fi
+
+  echo "📜 申请证书中..."
+  /root/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone || true
+  /root/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
+    --key-file ${CONFIG_DIR}/privkey.pem \
+    --fullchain-file ${CONFIG_DIR}/fullchain.pem >/dev/null 2>&1
+
   if [[ ! -f "${CONFIG_DIR}/fullchain.pem" || ! -f "${CONFIG_DIR}/privkey.pem" ]]; then
-      echo "⚙️ 未检测到证书，自动申请中..."
-      curl https://get.acme.sh | sh
-      ~/.acme.sh/acme.sh --register-account -m no-reply@autogen.local >/dev/null 2>&1
-      ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone
-      ~/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
-          --key-file ${CONFIG_DIR}/privkey.pem \
-          --fullchain-file ${CONFIG_DIR}/fullchain.pem
+      echo "❌ 证书申请失败，请检查域名是否正确解析到本机！"
+      exit 1
   fi
 
   echo "🐳 启动容器..."
