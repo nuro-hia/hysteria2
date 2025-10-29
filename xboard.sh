@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-# Hysteria + Xboard 一键部署与管理脚本
+# Hysteria + Xboard 一键部署与管理脚本（自动证书）
 # 作者: nuro
-# 仓库: https://github.com/nixore-run/manager-script
+# 仓库: https://github.com/nuro-hia/hysteria2
 # ============================================================
 
 set -e
@@ -89,8 +89,9 @@ EOF
 
   echo "🔒 检查证书..."
   if [[ ! -f "${CONFIG_DIR}/fullchain.pem" || ! -f "${CONFIG_DIR}/privkey.pem" ]]; then
-      echo "⚠️ 未检测到证书，准备申请中..."
+      echo "⚙️ 未检测到证书，自动申请中..."
       curl https://get.acme.sh | sh
+      ~/.acme.sh/acme.sh --register-account -m no-reply@autogen.local >/dev/null 2>&1
       ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone
       ~/.acme.sh/acme.sh --install-cert -d ${DOMAIN} \
           --key-file ${CONFIG_DIR}/privkey.pem \
