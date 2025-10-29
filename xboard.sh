@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（内置 ACME 自动签发版）
+# 🌀 Hysteria 对接 XBoard 管理脚本（内置 ACME 自动签发 + 完整卸载版）
 # 作者: nuro | 日期: 2025-10-30
 # =====================================================
 
@@ -27,28 +27,32 @@ header() {
   echo "=============================="
 }
 
-fix_docker_tmp() {
-  local root_dir
-  root_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
-  systemctl stop docker || true
-  mkdir -p "${root_dir}/tmp"
-  chmod 1777 "${root_dir}/tmp"
-  rm -rf "${root_dir}/tmp/"* || true
-  export DOCKER_TMPDIR="${root_dir}/tmp"
-  systemctl restart containerd || true
-  systemctl start docker || true
-}
-
+# 自动修复 Docker 环境（解除 mask + 启动 socket）
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
     echo "🐳 未检测到 Docker，正在安装..."
     curl -fsSL https://get.docker.com | bash
-    systemctl enable --now docker
   else
     echo "✅ 已检测到 Docker"
   fi
-  fix_docker_tmp
+
+  # 自动解除 mask、恢复 socket 激活
+  systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
+  systemctl enable docker.socket >/dev/null 2>&1 || true
+  systemctl start docker.socket >/dev/null 2>&1 || true
+  systemctl start docker >/dev/null 2>&1 || true
+
+  # 若仍未启动则强制修复
+  if ! docker ps >/dev/null 2>&1; then
+    echo "⚙️ 修复 Docker 服务状态..."
+    systemctl daemon-reexec
+    systemctl daemon-reload
+    systemctl restart docker.socket || true
+    systemctl restart docker || true
+  fi
+
+  docker ps >/dev/null 2>&1 && echo "✅ Docker 已正常运行"
 }
 
 install_hysteria() {
@@ -60,7 +64,7 @@ install_hysteria() {
   read -rp "🔑 通讯密钥(apiKey): " API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  read -rp "📧 ACME 注册邮箱(可随意填写): " ACME_EMAIL
+  read -rp "📧 ACME 注册邮箱(随意填写): " ACME_EMAIL
 
   echo ""
   echo "📜 使用 Hysteria 内置 ACME 自动申请证书..."
@@ -88,10 +92,7 @@ install_hysteria() {
   echo "📧 ACME 邮箱: ${ACME_EMAIL}"
   echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
-  echo ""
-  echo "⚠️ 请确保端口 80 和 443 未被其他服务占用"
-  echo "⚠️ 若证书申请失败，请关闭 nginx、caddy、bt 面板等占用 80/443 的进程"
-  echo "--------------------------------------"
+  echo "⚠️ 请确保 80/443 端口未被占用（否则 ACME 无法验证）"
   pause
 }
 
@@ -114,41 +115,42 @@ update_image() {
   pause
 }
 
+# 🚨 彻底卸载 Docker（无残留）
 uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 及全部组件"
   read -rp "确认继续？(y/n): " c
-  if [[ $c =~ ^[Yy]$ ]]; then
-    echo "🧹 停止服务（含 socket）..."
-    systemctl stop docker docker.socket containerd || true
-    pkill -f dockerd || true
-    pkill -f containerd || true
+  [[ ! $c =~ ^[Yy]$ ]] && pause && return
 
-    echo "🧹 清理容器/镜像/卷/网络..."
-    systemctl start docker || true
-    docker stop $(docker ps -aq) 2>/dev/null || true
-    docker rm -f $(docker ps -aq) 2>/dev/null || true
-    docker rmi -f $(docker images -aq) 2>/dev/null || true
-    docker volume rm $(docker volume ls -q) 2>/dev/null || true
-    docker network rm $(docker network ls -q | grep -vE '(^ID$|^NAME$|bridge|host|none)') 2>/dev/null || true
-    docker system prune -af --volumes 2>/dev/null || true
+  echo "🧹 停止所有 Docker 服务..."
+  systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
+  systemctl stop docker docker.socket containerd 2>/dev/null || true
+  pkill -f dockerd 2>/dev/null || true
+  pkill -f containerd 2>/dev/null || true
 
-    echo "🧹 停止并禁用/屏蔽 docker 与 containerd..."
-    systemctl stop docker docker.socket containerd || true
-    systemctl disable docker docker.socket containerd || true
-    systemctl mask docker docker.socket containerd || true
+  echo "🧹 删除容器、镜像、卷、网络..."
+  systemctl start docker || true
+  docker stop $(docker ps -aq) 2>/dev/null || true
+  docker rm -f $(docker ps -aq) 2>/dev/null || true
+  docker rmi -f $(docker images -aq) 2>/dev/null || true
+  docker volume rm $(docker volume ls -q) 2>/dev/null || true
+  docker network rm $(docker network ls -q | grep -vE 'bridge|host|none') 2>/dev/null || true
+  docker system prune -af --volumes 2>/dev/null || true
 
-    echo "🧹 删除数据与配置目录..."
-    rm -rf /etc/hysteria
-    rm -rf /var/lib/docker /var/lib/containerd /etc/docker
-    rm -rf ~/.docker
+  echo "🧹 清除所有文件与目录..."
+  rm -rf /etc/hysteria
+  rm -rf /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
+  rm -rf /etc/systemd/system/docker.service /etc/systemd/system/docker.socket
+  rm -rf /etc/systemd/system/containerd.service
+  rm -rf /lib/systemd/system/docker.service /lib/systemd/system/docker.socket
+  rm -rf /usr/lib/systemd/system/docker.service /usr/lib/systemd/system/docker.socket
 
-    echo "🧹 卸载相关包..."
-    apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
-    apt autoremove -y >/dev/null 2>&1 || true
-    systemctl daemon-reload
+  echo "🧹 卸载相关包..."
+  apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
+  apt autoremove -y >/dev/null 2>&1 || true
+  systemctl daemon-reexec
+  systemctl daemon-reload
 
-    echo "✅ 已彻底卸载 Docker 与 Hysteria 所有组件"
-  fi
+  echo "✅ Docker 已彻底卸载，无残留"
   pause
 }
 
