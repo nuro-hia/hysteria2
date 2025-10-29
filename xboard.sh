@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Hysteria + Xboard 一键部署与管理脚本（简洁版）
+# Hysteria + Xboard 一键部署与管理脚本（通用版）
 # 作者: nuro
 # 仓库: https://github.com/nuro-hia/hysteria2
 # ============================================================
@@ -9,15 +9,26 @@ set -e
 CONFIG_DIR="/etc/hysteria"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 
-# 🐳 检查 Docker
+# 🐳 检查 Docker & Compose
 check_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "🐳 未检测到 Docker，正在自动安装..."
     apt update -y >/dev/null 2>&1
-    apt install -y docker.io docker-compose curl wget openssl -y >/dev/null 2>&1
+    apt install -y docker.io curl wget openssl -y >/dev/null 2>&1
     systemctl enable docker --now >/dev/null 2>&1
-    echo "✅ Docker 安装完成。"
   fi
+
+  if command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD="docker-compose"
+  elif docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+  else
+    echo "📦 正在安装 docker-compose ..."
+    apt install -y docker-compose >/dev/null 2>&1
+    COMPOSE_CMD="docker-compose"
+  fi
+
+  echo "✅ Docker 已就绪，使用指令: ${COMPOSE_CMD}"
 }
 
 # ========================
@@ -50,7 +61,7 @@ menu() {
 }
 
 # ========================
-# 安装部署流程（自动生成自签证书）
+# 安装部署流程
 # ========================
 install_hysteria() {
   check_docker
@@ -65,7 +76,7 @@ install_hysteria() {
 
   mkdir -p "$CONFIG_DIR"
 
-  # 写入配置文件
+  # 写入 server.yaml
   cat > ${CONFIG_DIR}/server.yaml <<EOF
 v2board:
   apiHost: ${API_HOST}
@@ -94,7 +105,7 @@ acl:
 listen: :${PORT}
 EOF
 
-  # 写入 docker-compose 文件
+  # 写入 docker-compose.yml
   cat > ${COMPOSE_FILE} <<EOF
 version: '3'
 services:
@@ -108,23 +119,17 @@ services:
     command: server -c /etc/hysteria/server.yaml
 EOF
 
-  # === 生成自签名证书 ===
+  # 生成证书
   echo "📜 正在生成证书..."
   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout ${CONFIG_DIR}/privkey.pem \
     -out ${CONFIG_DIR}/fullchain.pem \
     -subj "/C=CN/ST=Internet/L=Server/O=Hysteria/OU=AutoSign/CN=${DOMAIN}" >/dev/null 2>&1
+  echo "✅ 证书已生成。"
 
-  if [[ -f "${CONFIG_DIR}/fullchain.pem" ]]; then
-    echo "✅ 自签证书已生成。"
-  else
-    echo "❌ 证书生成失败，请检查 openssl 是否正常安装。"
-    exit 1
-  fi
+  echo "🐳 启动容器..."
+  ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
 
-  # === 启动容器 ===
-  echo "🐳 启动容器中..."
-  docker compose -f ${COMPOSE_FILE} up -d
   echo ""
   echo "✅ 部署完成！"
   echo "--------------------------------------"
@@ -135,7 +140,7 @@ EOF
   echo "🌐 面板地址: ${API_HOST}"
   echo "🆔 节点ID: ${NODE_ID}"
   echo "--------------------------------------"
-  echo "📢 注意: 当前使用自签证书，如客户端验证失败，请关闭 verify 或导入证书信任。"
+  echo "📢 提示: 这是自签证书，客户端需关闭验证或导入信任。"
   sleep 2
   menu
 }
@@ -146,7 +151,7 @@ EOF
 restart_hysteria() {
   check_docker
   echo "🔄 正在重启容器..."
-  docker compose -f ${COMPOSE_FILE} restart || echo "⚠️ 未检测到容器"
+  ${COMPOSE_CMD} -f ${COMPOSE_FILE} restart || echo "⚠️ 未检测到容器"
   echo "✅ 已重启。"
   sleep 1
   menu
@@ -155,7 +160,7 @@ restart_hysteria() {
 stop_hysteria() {
   check_docker
   echo "🛑 停止容器..."
-  docker compose -f ${COMPOSE_FILE} down || echo "⚠️ 未检测到容器"
+  ${COMPOSE_CMD} -f ${COMPOSE_FILE} down || echo "⚠️ 未检测到容器"
   echo "✅ 已停止。"
   sleep 1
   menu
@@ -166,7 +171,7 @@ remove_hysteria() {
   echo "⚠️ 该操作将删除容器和配置！"
   read -rp "确认删除？(y/N): " confirm
   if [[ $confirm =~ ^[Yy]$ ]]; then
-    docker compose -f ${COMPOSE_FILE} down --rmi all -v --remove-orphans || true
+    ${COMPOSE_CMD} -f ${COMPOSE_FILE} down --rmi all -v --remove-orphans || true
     rm -rf ${CONFIG_DIR}
     echo "✅ 已彻底删除。"
   fi
@@ -185,7 +190,7 @@ update_image() {
   check_docker
   echo "⬆️ 拉取最新镜像并重启..."
   docker pull ghcr.io/cedar2025/hysteria:latest
-  docker compose -f ${COMPOSE_FILE} up -d
+  ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
   echo "✅ 镜像已更新并重启完成。"
   sleep 1
   menu
