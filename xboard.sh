@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# 🌀 Hysteria 对接 XBoard 管理脚本（内置 ACME 自动签发 + 完整卸载版）
+# 🌀 Hysteria 对接 XBoard 管理脚本（自动 URL 编码 + 自签证书 + 完整卸载版）
 # 作者: nuro | 日期: 2025-10-30
 # =====================================================
 
@@ -27,7 +27,21 @@ header() {
   echo "=============================="
 }
 
-# 自动修复 Docker 环境（解除 mask + 启动 socket）
+urlencode() {
+  # URL 编码函数
+  local data="$1"
+  local output=""
+  local i c
+  for ((i=0; i<${#data}; i++)); do
+    c=${data:$i:1}
+    case $c in
+      [a-zA-Z0-9.~_-]) output+="$c" ;;
+      *) printf -v hex '%%%02X' "'$c"; output+="$hex" ;;
+    esac
+  done
+  echo "$output"
+}
+
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -43,7 +57,6 @@ install_docker() {
   systemctl start docker.socket >/dev/null 2>&1 || true
   systemctl start docker >/dev/null 2>&1 || true
 
-  # 若仍未启动则强制修复
   if ! docker ps >/dev/null 2>&1; then
     echo "⚙️ 修复 Docker 服务状态..."
     systemctl daemon-reexec
@@ -61,24 +74,31 @@ install_hysteria() {
 
   echo ""
   read -rp "🌐 面板地址(如 https://mist.mistea.link): " API_HOST
-  read -rp "🔑 通讯密钥(apiKey): " API_KEY
+  read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  read -rp "📧 ACME 注册邮箱(随意填写): " ACME_EMAIL
 
-  echo ""
-  echo "📜 使用 Hysteria 内置 ACME 自动申请证书..."
+  # URL 编码处理
+  API_KEY=$(urlencode "$RAW_API_KEY")
+
+  echo "📜 生成自签证书..."
+  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
+    -subj "/CN=${DOMAIN}" >/dev/null 2>&1
+  echo "✅ 自签证书生成成功"
+
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker pull "$IMAGE" || true
 
+  echo "🐳 启动 Hysteria 容器..."
   docker run -itd --restart=always --network=host \
     -v "${CONFIG_DIR}:/etc/hysteria" \
     -e apiHost="${API_HOST}" \
     -e apiKey="${API_KEY}" \
     -e nodeID="${NODE_ID}" \
     -e domain="${DOMAIN}" \
-    -e acmeDomains="${DOMAIN}" \
-    -e acmeEmail="${ACME_EMAIL}" \
+    -e tlsCert="/etc/hysteria/tls.crt" \
+    -e tlsKey="/etc/hysteria/tls.key" \
     --name "${CONTAINER}" \
     "${IMAGE}"
 
@@ -86,13 +106,20 @@ install_hysteria() {
   echo "✅ 部署完成"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
-  echo "🔑 通讯密钥: ${API_KEY}"
+  echo "🔑 通讯密钥(已编码): ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
-  echo "📧 ACME 邮箱: ${ACME_EMAIL}"
+  echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
-  echo "⚠️ 请确保 80/443 端口未被占用（否则 ACME 无法验证）"
+
+  echo ""
+  echo "🔍 检测接口连通性..."
+  if curl -s "${API_HOST}/api/v1/server/UniProxy/user?token=${API_KEY}&node_id=${NODE_ID}&node_type=hysteria" | grep -q '"data"'; then
+    echo "✅ XBoard 通信正常"
+  else
+    echo "⚠️ 未能获取节点信息，请检查 XBoard 面板配置或 token"
+  fi
   pause
 }
 
@@ -115,7 +142,6 @@ update_image() {
   pause
 }
 
-# 🚨 彻底卸载 Docker（无残留）
 uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 及全部组件"
   read -rp "确认继续？(y/n): " c
@@ -137,19 +163,12 @@ uninstall_docker_all() {
   docker system prune -af --volumes 2>/dev/null || true
 
   echo "🧹 清除所有文件与目录..."
-  rm -rf /etc/hysteria
-  rm -rf /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
-  rm -rf /etc/systemd/system/docker.service /etc/systemd/system/docker.socket
-  rm -rf /etc/systemd/system/containerd.service
-  rm -rf /lib/systemd/system/docker.service /lib/systemd/system/docker.socket
-  rm -rf /usr/lib/systemd/system/docker.service /usr/lib/systemd/system/docker.socket
-
-  echo "🧹 卸载相关包..."
+  rm -rf /etc/hysteria /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
+  rm -rf /etc/systemd/system/docker* /lib/systemd/system/docker* /usr/lib/systemd/system/docker*
   apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
   apt autoremove -y >/dev/null 2>&1 || true
   systemctl daemon-reexec
   systemctl daemon-reload
-
   echo "✅ Docker 已彻底卸载，无残留"
   pause
 }
