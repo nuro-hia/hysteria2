@@ -1,48 +1,23 @@
 #!/bin/bash
-# ============================================================
-# Hysteria 对接 XBoard 快速部署版（自动修复 Docker tmp）
-# 作者: nuro
-# 日期: 2025-10-30
-# ============================================================
+# =====================================================
+# Hysteria 对接 XBoard 快速管理脚本 v4-final
+# 作者: nuro | 2025-10-30
+# =====================================================
 
 set -e
 CONFIG_DIR="/etc/hysteria"
-IMAGE_NAME="ghcr.io/cedar2025/hysteria:latest"
-CONTAINER_NAME="hysteria"
+IMAGE="ghcr.io/cedar2025/hysteria:latest"
+CONTAINER="hysteria"
 
-# ------------------ 修复 Docker 临时目录 ------------------
-fix_docker_tmp() {
-  echo "🧩 检查 Docker 临时目录..."
-  local root_dir
-  root_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
-  mkdir -p "${root_dir}/tmp"
-  chmod 1777 "${root_dir}/tmp"
-  rm -rf "${root_dir}/tmp/"* || true
-  export DOCKER_TMPDIR="${root_dir}/tmp"
-  systemctl restart containerd || true
-  systemctl restart docker || true
-  echo "✅ Docker 临时目录修复完成 (${DOCKER_TMPDIR})"
-}
+# -------------------------------
+# 基础函数
+# -------------------------------
+pause() { echo ""; read -rp "按回车返回菜单..." _; menu; }
 
-# ------------------ 检查 / 安装 Docker ------------------
-install_docker() {
-  echo "🧩 检查 Docker 环境..."
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "🐳 未检测到 Docker，正在安装..."
-    curl -fsSL https://get.docker.com | bash
-    systemctl enable docker --now
-    echo "✅ Docker 安装完成"
-  else
-    echo "✅ 已检测到 Docker"
-  fi
-  fix_docker_tmp
-}
-
-# ------------------ 菜单 ------------------
-menu() {
+header() {
   clear
   echo "=============================="
-  echo " Hysteria 对接 XBoard 管理脚本"
+  echo " Hysteria 对接 XBoard 快速脚本"
   echo "=============================="
   echo "1 安装并启动 Hysteria"
   echo "2 重启容器"
@@ -53,23 +28,37 @@ menu() {
   echo "7 卸载 Docker 全部"
   echo "8 退出"
   echo "=============================="
-  read -rp "请选择操作: " opt
-  case "$opt" in
-    1) install_hysteria ;;
-    2) docker restart $CONTAINER_NAME || echo "⚠️ 未找到容器"; pause ;;
-    3) docker stop $CONTAINER_NAME || echo "⚠️ 未找到容器"; pause ;;
-    4) remove_all ;;
-    5) docker logs -f $CONTAINER_NAME || echo "⚠️ 未找到容器"; pause ;;
-    6) update_image ;;
-    7) uninstall_all ;;
-    8) exit 0 ;;
-    *) echo "❌ 无效选项"; sleep 1; menu ;;
-  esac
 }
 
-pause() { echo ""; read -rp "按回车返回菜单..." _; menu; }
+# -------------------------------
+# Docker 环境检测与修复
+# -------------------------------
+fix_docker_tmp() {
+  local root_dir
+  root_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
+  mkdir -p "${root_dir}/tmp"
+  chmod 1777 "${root_dir}/tmp"
+  rm -rf "${root_dir}/tmp/"* || true
+  export DOCKER_TMPDIR="${root_dir}/tmp"
+  systemctl restart containerd || true
+  systemctl restart docker || true
+}
 
-# ------------------ 安装部署 ------------------
+install_docker() {
+  echo "🧩 检查 Docker 环境..."
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "🐳 未检测到 Docker，正在安装..."
+    curl -fsSL https://get.docker.com | bash
+    systemctl enable --now docker
+  else
+    echo "✅ 已检测到 Docker"
+  fi
+  fix_docker_tmp
+}
+
+# -------------------------------
+# 安装并启动 Hysteria
+# -------------------------------
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -91,7 +80,7 @@ install_hysteria() {
   echo "✅ 证书生成成功"
 
   echo "🐳 启动 Hysteria 容器..."
-  docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
   if ! docker run -itd --restart=always --network=host \
     -v "${CERT_FILE}:/etc/hysteria/tls.crt" \
@@ -100,11 +89,12 @@ install_hysteria() {
     -e apiKey="${API_KEY}" \
     -e nodeID="${NODE_ID}" \
     -e domain="${DOMAIN}" \
-    --name "${CONTAINER_NAME}" \
-    "${IMAGE_NAME}"; then
-      echo "⚠️ 镜像拉取失败，尝试自动修复 Docker 临时目录..."
+    -e acmeEmail="disabled" \
+    --name "${CONTAINER}" \
+    "${IMAGE}"; then
+      echo "⚠️ 镜像拉取失败，修复 Docker 临时目录后重试..."
       fix_docker_tmp
-      docker pull "${IMAGE_NAME}"
+      docker pull "${IMAGE}"
       docker run -itd --restart=always --network=host \
         -v "${CERT_FILE}:/etc/hysteria/tls.crt" \
         -v "${KEY_FILE}:/etc/hysteria/tls.key" \
@@ -112,54 +102,90 @@ install_hysteria() {
         -e apiKey="${API_KEY}" \
         -e nodeID="${NODE_ID}" \
         -e domain="${DOMAIN}" \
-        --name "${CONTAINER_NAME}" \
-        "${IMAGE_NAME}"
+        -e acmeEmail="disabled" \
+        --name "${CONTAINER}" \
+        "${IMAGE}"
   fi
 
   echo ""
   echo "✅ 部署完成"
   echo "--------------------------------------"
-  echo "📄 证书文件: ${CERT_FILE}"
-  echo "📡 容器名称: ${CONTAINER_NAME}"
-  echo "🌍 面板地址: ${API_HOST}"
+  echo "🌐 面板地址: ${API_HOST}"
+  echo "🆔 节点 ID: ${NODE_ID}"
+  echo "🏷️ 节点域名: ${DOMAIN}"
+  echo "📜 证书文件: ${CERT_FILE}"
+  echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
   pause
 }
 
-# ------------------ 删除容器与配置 ------------------
-remove_all() {
-  echo "⚠️ 确认要删除 Hysteria 容器与配置？"
+# -------------------------------
+# 删除容器与配置
+# -------------------------------
+remove_container() {
+  echo "⚠️ 确认删除 Hysteria 容器与配置？"
   read -rp "输入 y 继续: " c
   if [[ $c =~ ^[Yy]$ ]]; then
-    docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
-    docker rmi $IMAGE_NAME >/dev/null 2>&1 || true
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    docker rmi "$IMAGE" >/dev/null 2>&1 || true
     rm -rf "$CONFIG_DIR"
     echo "✅ 已删除容器与配置"
   fi
   pause
 }
 
-# ------------------ 更新镜像 ------------------
+# -------------------------------
+# 更新镜像
+# -------------------------------
 update_image() {
-  docker pull "$IMAGE_NAME"
-  docker restart "$CONTAINER_NAME"
+  docker pull "$IMAGE"
+  docker restart "$CONTAINER" || true
   echo "✅ 镜像已更新并重启"
   pause
 }
 
-# ------------------ 卸载 Docker ------------------
-uninstall_all() {
-  echo "⚠️ 卸载 Docker 及所有组件"
-  read -rp "确认继续? y/n: " c
+# -------------------------------
+# 卸载 Docker 全部组件
+# -------------------------------
+uninstall_docker_all() {
+  echo "⚠️ 卸载 Docker 及全部组件"
+  read -rp "确认继续？(y/n): " c
   if [[ $c =~ ^[Yy]$ ]]; then
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker rmi "$IMAGE_NAME" >/dev/null 2>&1 || true
-    rm -rf "$CONFIG_DIR"
-    apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1
-    rm -rf /var/lib/docker /var/lib/containerd /etc/docker
-    echo "✅ 已彻底卸载 Docker 及所有组件"
+    local container_count
+    container_count=$(docker ps -aq | wc -l)
+    if [[ "$container_count" -le 1 ]]; then
+      docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+      docker rmi "$IMAGE" >/dev/null 2>&1 || true
+      rm -rf "$CONFIG_DIR"
+      apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1
+      rm -rf /var/lib/docker /var/lib/containerd /etc/docker
+      echo "✅ 已彻底卸载 Docker"
+    else
+      echo "⚠️ 检测到其他容器存在，已跳过 Docker 卸载，仅清理 Hysteria"
+      docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+      docker rmi "$IMAGE" >/dev/null 2>&1 || true
+    fi
   fi
   pause
+}
+
+# -------------------------------
+# 主菜单
+# -------------------------------
+menu() {
+  header
+  read -rp "请选择操作: " opt
+  case "$opt" in
+    1) install_hysteria ;;
+    2) docker restart "$CONTAINER" || echo "⚠️ 未找到容器"; pause ;;
+    3) docker stop "$CONTAINER" || echo "⚠️ 未找到容器"; pause ;;
+    4) remove_container ;;
+    5) docker logs -f "$CONTAINER" || echo "⚠️ 未找到容器"; pause ;;
+    6) update_image ;;
+    7) uninstall_docker_all ;;
+    8) exit 0 ;;
+    *) echo "❌ 无效选项"; sleep 1; menu ;;
+  esac
 }
 
 menu
