@@ -1,7 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（含彻底卸载版）
-# 版本：2025-10-30
+# Hysteria 对接 XBoard 管理脚本
 # =====================================================
 
 set -euo pipefail
@@ -83,19 +82,13 @@ install_hysteria() {
   mkdir -p "$CONFIG_DIR"
 
   echo ""
-  read -rp "🌐 面板地址(Xboard 官网): " API_HOST
+  read -rp "🌐 面板地址(XBoard): " API_HOST
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
   read -rp "📧 ACME 邮箱(默认: ${DEFAULT_EMAIL}): " EMAIL
   EMAIL=${EMAIL:-$DEFAULT_EMAIL}
   API_KEY=$(urlencode "$RAW_API_KEY")
-
-  echo "📜 生成自签证书..."
-  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
-    -subj "/CN=${DOMAIN}" >/dev/null 2>&1
-  echo "✅ 自签证书生成成功"
 
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
@@ -109,8 +102,6 @@ install_hysteria() {
     -e domain="${DOMAIN}" \
     -e acmeDomains="${DOMAIN}" \
     -e acmeEmail="${EMAIL}" \
-    -e tlsCert="/etc/hysteria/tls.crt" \
-    -e tlsKey="/etc/hysteria/tls.key" \
     --name "${CONTAINER}" \
     "${IMAGE}"
 
@@ -118,11 +109,10 @@ install_hysteria() {
   echo "✅ 部署完成"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
-  echo "🔑 通讯密钥: ${API_KEY}"
+  echo "🔑 通讯密钥(已编码): ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
   echo "📧 ACME 邮箱: ${EMAIL}"
-  echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
   pause
