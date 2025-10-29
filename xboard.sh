@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本 (CF DNS 自动申请证书)
+# Hysteria 对接 XBoard 管理脚本（自签证书稳定版）
 # 作者: nuro | 日期: 2025-10-30
 # =====================================================
 
@@ -8,7 +8,6 @@ set -e
 CONFIG_DIR="/etc/hysteria"
 IMAGE="ghcr.io/cedar2025/hysteria:latest"
 CONTAINER="hysteria"
-ACME_HOME="/root/.acme.sh"
 
 pause() { echo ""; read -rp "按回车返回菜单..." _; menu; }
 
@@ -52,33 +51,16 @@ install_docker() {
   fix_docker_tmp
 }
 
-install_acme() {
-  if [ ! -x "${ACME_HOME}/acme.sh" ]; then
-    echo "🪪 安装 acme.sh..."
-    curl -fsSL https://get.acme.sh | sh -s email=cf@local
-  fi
-  "${ACME_HOME}/acme.sh" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
-}
-
-issue_cf_dns_cert() {
-  local domain="$1" email="$2" spikey="$3"
+gen_self_signed_cert() {
+  local domain="$1"
   mkdir -p "$CONFIG_DIR"
-  install_acme
-
-  echo "🔐 使用 Cloudflare DNS 验证方式为 ${domain} 申请证书..."
-  export CF_Email="${email}"
-  export CF_Key="${spikey}"
-
-  "${ACME_HOME}/acme.sh" --issue --dns dns_cf -d "${domain}" --keylength ec-256
-
-  echo "📦 安装证书到 ${CONFIG_DIR}..."
-  "${ACME_HOME}/acme.sh" --install-cert -d "${domain}" --ecc \
-    --fullchain-file "${CONFIG_DIR}/tls.crt" \
-    --key-file "${CONFIG_DIR}/tls.key" \
-    --reloadcmd "docker restart ${CONTAINER} >/dev/null 2>&1 || true"
-
+  echo "📜 正在生成自签证书 (${domain})..."
+  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout "${CONFIG_DIR}/tls.key" \
+    -out "${CONFIG_DIR}/tls.crt" \
+    -subj "/CN=${domain}" >/dev/null 2>&1
   chmod 600 "${CONFIG_DIR}/tls.key"
-  echo "✅ 证书申请成功：${CONFIG_DIR}/tls.crt / ${CONFIG_DIR}/tls.key"
+  echo "✅ 证书生成成功：${CONFIG_DIR}/tls.crt"
 }
 
 install_hysteria() {
@@ -90,13 +72,8 @@ install_hysteria() {
   read -rp "🔑 通讯密钥(apiKey): " API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  echo ""
-  echo "📩 请输入 Cloudflare 账户邮箱 与 Global API Key(SPI Key)"
-  read -rp "📧 邮箱: " CF_EMAIL
-  read -rp "🔐 Global API Key(SPI Key): " CF_KEY
 
-  echo "📜 正在通过 Cloudflare DNS 验证申请证书..."
-  issue_cf_dns_cert "${DOMAIN}" "${CF_EMAIL}" "${CF_KEY}"
+  gen_self_signed_cert "${DOMAIN}"
 
   echo "🐳 启动 Hysteria 容器..."
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
@@ -109,6 +86,7 @@ install_hysteria() {
     -e nodeID="${NODE_ID}" \
     -e domain="${DOMAIN}" \
     -e acmeEmail="disabled" \
+    -e acmeDomains="" \
     --name "${CONTAINER}" \
     "${IMAGE}"
 
