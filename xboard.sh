@@ -1,9 +1,11 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（彻底卸载 + 重装修复）
+# Hysteria 对接 XBoard 管理脚本
+# 内置 ACME（Hysteria 原生）、自签证书、彻底卸载 Docker、自修复机制
+# 版本：2025-10-30
 # =====================================================
-set -euo pipefail
 
+set -euo pipefail
 CONFIG_DIR="/etc/hysteria"
 IMAGE="ghcr.io/cedar2025/hysteria:latest"
 CONTAINER="hysteria"
@@ -27,7 +29,7 @@ header() {
   echo "=============================="
 }
 
-# ========== URL 编码 ==========
+# URL 编码
 urlencode() {
   local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
@@ -40,118 +42,85 @@ urlencode() {
   echo "$output"
 }
 
-# ========== 修复临时目录 ==========
-fix_docker_tmp() {
-  local root_dir
-  root_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
-  echo "🛠️ 修复 Docker 临时目录: ${root_dir}/tmp"
-  systemctl stop docker 2>/dev/null || true
-  mkdir -p "${root_dir}/tmp"
-  chmod 1777 "${root_dir}/tmp"
-  rm -rf "${root_dir}/tmp/"* 2>/dev/null || true
-  export DOCKER_TMPDIR="${root_dir}/tmp"
-  systemctl restart containerd 2>/dev/null || true
-  systemctl start docker 2>/dev/null || true
-}
-
-# ========== Docker 安装（自动修复） ==========
-install_docker() {
-  echo "🧩 检查 Docker 环境..."
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "🐳 未检测到 Docker，正在安装..."
-    curl -fsSL https://get.docker.com | bash >/dev/null 2>&1
-  fi
-
-  # 尝试修复 masked 服务
-  systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
-  systemctl daemon-reexec
-  systemctl daemon-reload
-  systemctl enable docker.socket >/dev/null 2>&1 || true
-  systemctl enable docker >/dev/null 2>&1 || true
-  systemctl start docker.socket >/dev/null 2>&1 || true
-  systemctl start containerd >/dev/null 2>&1 || true
-  systemctl start docker >/dev/null 2>&1 || true
-
-  # 如果还是不行，则重新安装
-  if ! docker ps >/dev/null 2>&1; then
-    echo "⚙️ Docker 启动异常，尝试彻底修复..."
-    uninstall_docker_core
-    curl -fsSL https://get.docker.com | bash >/dev/null 2>&1
-    systemctl enable docker --now >/dev/null 2>&1
-  fi
-
-  # 最后再检查
-  if docker ps >/dev/null 2>&1; then
-    echo "✅ Docker 已正常运行"
-  else
-    echo "❌ Docker 启动失败，请执行: journalctl -xeu docker"
-    exit 1
-  fi
-}
-
-# ========== 卸载核心（含挂载修复） ==========
-uninstall_docker_core() {
-  echo "🧹 停止所有 Docker 服务..."
+# --- 修复 docker 环境 ---
+docker_repair() {
+  echo "⚙️ Docker 启动异常，尝试彻底修复..."
   systemctl stop docker docker.socket containerd 2>/dev/null || true
-  pkill -9 docker containerd dockerd 2>/dev/null || true
-
-  echo "🧹 卸载 Docker 包..."
-  apt purge -y docker docker.io docker-ce docker-ce-cli docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
-  apt autoremove -y >/dev/null 2>&1 || true
-  apt clean >/dev/null 2>&1 || true
-
-  echo "🧹 卸载挂载..."
-  mount | grep "/run/docker" | awk '{print $3}' | while read -r m; do
-    umount -lf "$m" 2>/dev/null || true
-  done
-
-  echo "🧹 删除目录..."
-  rm -rf /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
-  rm -rf /run/docker* /run/containerd*
-  rm -rf /lib/systemd/system/docker* /etc/systemd/system/docker* /usr/lib/systemd/system/docker*
-  rm -f /usr/bin/docker /usr/local/bin/docker /usr/sbin/containerd /usr/bin/containerd-shim*
-
-  echo "🧹 重载 systemd..."
+  systemctl disable docker docker.socket containerd 2>/dev/null || true
+  systemctl unmask docker docker.socket containerd 2>/dev/null || true
+  umount -lf /run/docker/netns/default 2>/dev/null || true
+  rm -rf /run/docker* /run/containerd* /var/lib/docker/tmp/* /var/run/docker* || true
+  rm -f /etc/systemd/system/docker.service /etc/systemd/system/docker.socket /lib/systemd/system/docker.service /lib/systemd/system/docker.socket
   systemctl daemon-reexec
   systemctl daemon-reload
   systemctl reset-failed
+  curl -fsSL https://get.docker.com | bash >/dev/null 2>&1 || true
+  systemctl enable containerd --now >/dev/null 2>&1 || true
+  systemctl enable docker --now >/dev/null 2>&1 || true
 }
 
-# ========== 一键彻底卸载 ==========
-uninstall_docker_all() {
-  echo "⚠️ 确认要彻底卸载 Docker？(y/n)"
-  read -r c
-  [[ ! $c =~ ^[Yy]$ ]] && pause && return
+# --- 安装 docker ---
+install_docker() {
+  echo "🧩 检查 Docker 环境..."
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "🐳 未检测到 Docker，正在静默安装..."
+    curl -fsSL https://get.docker.com | bash >/dev/null 2>&1 || true
+  fi
 
-  uninstall_docker_core
-  echo "✅ Docker 已彻底卸载，无残留"
-  pause
+  systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
+  systemctl enable docker.socket >/dev/null 2>&1 || true
+  systemctl start docker.socket >/dev/null 2>&1 || true
+  systemctl start docker >/dev/null 2>&1 || true
+
+  # 三次检测机制
+  for i in 1 2 3; do
+    if docker ps >/dev/null 2>&1; then
+      echo "✅ Docker 已正常运行"
+      return 0
+    fi
+    echo "⚙️ 第 $i 次启动修复尝试..."
+    docker_repair
+    sleep 2
+  done
+
+  echo "❌ Docker 启动失败，请手动执行 journalctl -u docker -e 查看日志"
+  exit 1
 }
 
-# ========== 安装并启动 ==========
+# --- 拉镜像（自动修 tmp）---
+docker_pull_safe() {
+  local image="$1"
+  if ! docker pull "$image" >/dev/null 2>&1; then
+    echo "⚠️ 拉取失败，尝试修复后重试..."
+    docker_repair
+    docker pull "$image" >/dev/null 2>&1
+  fi
+}
+
+# --- 安装 hysteria ---
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
 
+  echo ""
   read -rp "🌐 面板地址(如 https://mist.mistea.link): " API_HOST
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  read -rp "📧 ACME 注册邮箱(默认: ${DEFAULT_EMAIL}): " EMAIL
+  read -rp "📧 ACME 邮箱(默认: ${DEFAULT_EMAIL}): " EMAIL
   EMAIL=${EMAIL:-$DEFAULT_EMAIL}
   API_KEY=$(urlencode "$RAW_API_KEY")
 
   echo "📜 生成自签证书..."
   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
-    -subj "/CN=${DOMAIN}" >/dev/null 2>&1 || true
+    -subj "/CN=${DOMAIN}" >/dev/null 2>&1
   echo "✅ 自签证书生成成功"
 
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  echo "🐳 拉取镜像..."
-  docker pull "$IMAGE" >/dev/null 2>&1 || fix_docker_tmp && docker pull "$IMAGE" >/dev/null 2>&1
+  docker_pull_safe "$IMAGE"
 
-  echo "🚀 启动 Hysteria..."
+  echo "🐳 启动 Hysteria 容器..."
   docker run -itd --restart=always --network=host \
     -v "${CONFIG_DIR}:/etc/hysteria" \
     -e apiHost="${API_HOST}" \
@@ -162,8 +131,10 @@ install_hysteria() {
     -e acmeEmail="${EMAIL}" \
     -e tlsCert="/etc/hysteria/tls.crt" \
     -e tlsKey="/etc/hysteria/tls.key" \
-    --name "${CONTAINER}" "${IMAGE}" >/dev/null 2>&1 || true
+    --name "${CONTAINER}" \
+    "${IMAGE}"
 
+  echo ""
   echo "✅ 部署完成"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
@@ -171,27 +142,56 @@ install_hysteria() {
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
   echo "📧 ACME 邮箱: ${EMAIL}"
+  echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
-  echo "📜 配置目录: ${CONFIG_DIR}"
   echo "--------------------------------------"
   pause
 }
 
+# --- 删除容器 ---
 remove_container() {
   echo "⚠️ 确认删除容器与配置？(y/n)"
   read -r c
-  [[ ! $c =~ ^[Yy]$ ]] && pause && return
-  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  docker rmi -f "$IMAGE" >/dev/null 2>&1 || true
-  rm -rf "$CONFIG_DIR"
-  echo "✅ 已删除容器与配置"
+  if [[ $c =~ ^[Yy]$ ]]; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    docker rmi -f "$IMAGE" >/dev/null 2>&1 || true
+    rm -rf "$CONFIG_DIR"
+    echo "✅ 已删除容器与配置"
+  fi
   pause
 }
 
+# --- 更新镜像 ---
 update_image() {
-  docker pull "$IMAGE" >/dev/null 2>&1 || fix_docker_tmp && docker pull "$IMAGE" >/dev/null 2>&1
+  docker_pull_safe "$IMAGE"
   docker restart "$CONTAINER" || true
   echo "✅ 镜像已更新并重启"
+  pause
+}
+
+# --- 卸载 docker ---
+uninstall_docker_all() {
+  echo "⚠️ 卸载 Docker 并彻底清理"
+  read -rp "确认继续？(y/n): " c
+  [[ ! $c =~ ^[Yy]$ ]] && pause && return
+
+  echo "🧹 停止所有 Docker 服务..."
+  systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
+  systemctl stop docker docker.socket containerd 2>/dev/null || true
+  systemctl disable docker docker.socket containerd 2>/dev/null || true
+  pkill -f dockerd 2>/dev/null || true
+  pkill -f containerd 2>/dev/null || true
+
+  echo "🧹 删除残留..."
+  umount -lf /run/docker/netns/default 2>/dev/null || true
+  rm -rf /etc/docker /var/lib/docker /var/lib/containerd /run/docker* /run/containerd* ~/.docker
+  rm -rf /lib/systemd/system/docker* /etc/systemd/system/docker* /usr/lib/systemd/system/docker*
+  apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
+  apt autoremove -y >/dev/null 2>&1 || true
+  systemctl daemon-reexec
+  systemctl daemon-reload
+  systemctl reset-failed
+  echo "✅ Docker 已彻底卸载"
   pause
 }
 
