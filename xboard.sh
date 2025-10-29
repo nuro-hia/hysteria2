@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-# Hysteria 对接 XBoard 一键部署脚本（ENJOY版）
+# Hysteria 对接 XBoard 一键部署脚本（PRO版）
 # 作者: nuro
 # 更新: 2025-10-30
-# 特性: emoji输入提示 + 智能卸载逻辑
+# 特点: 菜单无emoji, 执行过程含emoji, 智能卸载逻辑, 自动重试镜像下载
 # ============================================================
 
 set -e
@@ -11,9 +11,6 @@ CONFIG_DIR="/etc/hysteria"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 COMPOSE_CMD=""
 
-# ------------------------------------------------------------
-# 检查 Docker 与 Compose
-# ------------------------------------------------------------
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -30,7 +27,7 @@ install_docker() {
   elif docker-compose version >/dev/null 2>&1; then
     COMPOSE_CMD="docker-compose"
   else
-    echo "📦 未检测到 Docker Compose，正在安装..."
+    echo "📦 安装 Docker Compose 插件..."
     apt update -y && apt install -y docker-compose-plugin docker-compose
     if docker compose version >/dev/null 2>&1; then
       COMPOSE_CMD="docker compose"
@@ -43,26 +40,23 @@ install_docker() {
 
 pause() {
   echo ""
-  read -rp "💤 按回车返回菜单..." _
+  read -rp "按回车返回菜单..." _
   menu
 }
 
-# ------------------------------------------------------------
-# 菜单
-# ------------------------------------------------------------
 menu() {
   clear
   echo "=============================="
-  echo " 🌐 Hysteria 对接 XBoard 管理脚本"
+  echo " Hysteria 对接 XBoard 管理脚本"
   echo "=============================="
-  echo "1 🚀 安装并部署 Hysteria"
-  echo "2 🔁 重启容器"
-  echo "3 📴 停止容器"
-  echo "4 🗑️ 删除容器与配置"
-  echo "5 📄 查看运行日志"
-  echo "6 🔄 更新镜像"
-  echo "7 💣 卸载全部"
-  echo "8 ❌ 退出"
+  echo "1 安装并部署 Hysteria"
+  echo "2 重启容器"
+  echo "3 停止容器"
+  echo "4 删除容器与配置"
+  echo "5 查看运行日志"
+  echo "6 更新镜像"
+  echo "7 卸载全部"
+  echo "8 退出"
   echo "=============================="
   read -rp "请选择操作: " choice
   case $choice in
@@ -78,9 +72,6 @@ menu() {
   esac
 }
 
-# ------------------------------------------------------------
-# 安装与部署
-# ------------------------------------------------------------
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -93,7 +84,6 @@ install_hysteria() {
   read -rp "📡 监听端口 (默认36024): " PORT
   PORT=${PORT:-36024}
 
-  # 写配置文件
   cat > ${CONFIG_DIR}/server.yaml <<EOF
 v2board:
   apiHost: ${API_HOST}
@@ -122,7 +112,6 @@ acl:
 listen: :${PORT}
 EOF
 
-  # 写 docker-compose.yml
   cat > ${COMPOSE_FILE} <<EOF
 version: "3"
 services:
@@ -146,7 +135,12 @@ EOF
 
   echo ""
   echo "🐳 启动容器..."
-  ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
+  if ! ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d; then
+    echo "⚠️ 拉取镜像失败，清理缓存后重试..."
+    rm -rf /var/lib/docker/tmp/* || true
+    ${COMPOSE_CMD} -f ${COMPOSE_FILE} pull
+    ${COMPOSE_CMD} -f ${COMPOSE_FILE} up -d
+  fi
 
   echo ""
   echo "✅ 部署完成"
@@ -158,9 +152,6 @@ EOF
   pause
 }
 
-# ------------------------------------------------------------
-# 删除与更新
-# ------------------------------------------------------------
 remove_hysteria() {
   echo "⚠️ 确认要删除 Hysteria 容器与配置吗？"
   read -rp "输入 y 继续: " confirm
@@ -181,9 +172,6 @@ update_image() {
   pause
 }
 
-# ------------------------------------------------------------
-# 卸载逻辑：安全检查 + 条件删除 Docker
-# ------------------------------------------------------------
 uninstall_all() {
   echo "⚠️ 将卸载 Hysteria 容器与 Docker"
   read -rp "确认继续? y/n: " confirm
@@ -193,8 +181,8 @@ uninstall_all() {
     docker rmi ghcr.io/cedar2025/hysteria:latest >/dev/null 2>&1 || true
     rm -rf ${CONFIG_DIR}
 
-    local other_containers=$(docker ps -aq | grep -v "$(docker ps -aq --filter name=hysteria)" || true)
-    if [[ -z "$other_containers" ]]; then
+    local other=$(docker ps -aq | grep -v "$(docker ps -aq --filter name=hysteria)" || true)
+    if [[ -z "$other" ]]; then
       echo "🧹 未检测到其他容器，开始卸载 Docker..."
       apt purge -y docker docker.io docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1
       rm -rf /var/lib/docker /var/lib/containerd /etc/docker
