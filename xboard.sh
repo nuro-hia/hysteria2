@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Hysteria + Xboard 一键部署与管理脚本（自动域名邮箱版）
+# Hysteria + Xboard 一键部署与管理脚本（邮箱输入版）
 # 作者: nuro
 # 仓库: https://github.com/nuro-hia/hysteria2
 # ============================================================
@@ -26,6 +26,9 @@ check_acme() {
     echo "📦 正在安装 acme.sh ..."
     (curl -fsSL https://get.acme.sh | sh) >/dev/null 2>&1
   fi
+
+  # 默认使用 Let's Encrypt 避免 ZeroSSL 报错
+  /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1
 }
 
 # ========================
@@ -71,14 +74,12 @@ install_hysteria() {
   read -rp "🌐 请输入节点域名 (证书域名): " DOMAIN
   read -rp "📡 请输入监听端口 (默认36024): " PORT
   PORT=${PORT:-36024}
+  read -rp "📧 请输入邮箱 (默认 hia666@gmail.com): " EMAIL
+  EMAIL=${EMAIL:-hia666@gmail.com}
 
   mkdir -p "$CONFIG_DIR"
 
-  # 从域名生成合法邮箱
-  ROOT_DOMAIN=$(echo "$DOMAIN" | awk -F'.' '{print $(NF-1)"."$NF}')
-  EMAIL="admin@${ROOT_DOMAIN}"
-
-  echo "📧 自动生成邮箱：${EMAIL}"
+  echo "📧 使用邮箱: ${EMAIL}"
 
   # 注册 acme.sh 邮箱（只注册一次）
   if [ ! -f "/root/.acme.sh/account.conf" ]; then
@@ -150,7 +151,7 @@ EOF
   echo "⚙️ 监听端口: ${PORT} (UDP)"
   echo "🌐 面板: ${API_HOST}"
   echo "🆔 节点ID: ${NODE_ID}"
-  echo "📧 注册邮箱: ${EMAIL}"
+  echo "📧 邮箱: ${EMAIL}"
   echo "--------------------------------------"
   echo "日志查看: docker logs -f hysteria"
   sleep 2
