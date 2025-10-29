@@ -1,7 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本
-# 内置 ACME（Hysteria 原生）、自签证书、彻底卸载 Docker、自修复机制
+# Hysteria 对接 XBoard 管理脚本（内置 ACME + 自签证书 + 彻底卸载）
 # 版本：2025-10-30
 # =====================================================
 
@@ -29,7 +28,7 @@ header() {
   echo "=============================="
 }
 
-# URL 编码
+# ----------- URL 编码 -----------
 urlencode() {
   local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
@@ -42,62 +41,43 @@ urlencode() {
   echo "$output"
 }
 
-# --- 修复 docker 环境 ---
-docker_repair() {
-  echo "⚙️ Docker 启动异常，尝试彻底修复..."
-  systemctl stop docker docker.socket containerd 2>/dev/null || true
-  systemctl disable docker docker.socket containerd 2>/dev/null || true
-  systemctl unmask docker docker.socket containerd 2>/dev/null || true
-  umount -lf /run/docker/netns/default 2>/dev/null || true
-  rm -rf /run/docker* /run/containerd* /var/lib/docker/tmp/* /var/run/docker* || true
-  rm -f /etc/systemd/system/docker.service /etc/systemd/system/docker.socket /lib/systemd/system/docker.service /lib/systemd/system/docker.socket
-  systemctl daemon-reexec
-  systemctl daemon-reload
-  systemctl reset-failed
-  curl -fsSL https://get.docker.com | bash >/dev/null 2>&1 || true
-  systemctl enable containerd --now >/dev/null 2>&1 || true
-  systemctl enable docker --now >/dev/null 2>&1 || true
-}
-
-# --- 安装 docker ---
+# ----------- 安装 Docker -----------
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
-    echo "🐳 未检测到 Docker，正在静默安装..."
-    curl -fsSL https://get.docker.com | bash >/dev/null 2>&1 || true
+    echo "🐳 未检测到 Docker，正在安装..."
+    apt update -y >/dev/null 2>&1
+    apt install -y ca-certificates curl gnupg lsb-release >/dev/null 2>&1
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    echo \
+      "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+      $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+    apt update -y >/dev/null 2>&1
+    apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
+    systemctl enable docker --now >/dev/null 2>&1
   fi
 
-  systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
-  systemctl enable docker.socket >/dev/null 2>&1 || true
-  systemctl start docker.socket >/dev/null 2>&1 || true
-  systemctl start docker >/dev/null 2>&1 || true
-
-  # 三次检测机制
-  for i in 1 2 3; do
-    if docker ps >/dev/null 2>&1; then
-      echo "✅ Docker 已正常运行"
-      return 0
-    fi
-    echo "⚙️ 第 $i 次启动修复尝试..."
-    docker_repair
-    sleep 2
-  done
-
-  echo "❌ Docker 启动失败，请手动执行 journalctl -u docker -e 查看日志"
-  exit 1
+  if docker ps >/dev/null 2>&1; then
+    echo "✅ Docker 已正常运行"
+  else
+    echo "❌ Docker 启动失败，请执行：journalctl -u docker -e"
+    exit 1
+  fi
 }
 
-# --- 拉镜像（自动修 tmp）---
+# ----------- 拉镜像安全 -----------
 docker_pull_safe() {
   local image="$1"
-  if ! docker pull "$image" >/dev/null 2>&1; then
-    echo "⚠️ 拉取失败，尝试修复后重试..."
-    docker_repair
-    docker pull "$image" >/dev/null 2>&1
-  fi
+  docker pull "$image" >/dev/null 2>&1 || {
+    echo "⚠️ 拉取失败，尝试清理临时目录..."
+    rm -rf /var/lib/docker/tmp/* 2>/dev/null || true
+    docker pull "$image"
+  }
 }
 
-# --- 安装 hysteria ---
+# ----------- 安装 hysteria -----------
 install_hysteria() {
   install_docker
   mkdir -p "$CONFIG_DIR"
@@ -138,7 +118,7 @@ install_hysteria() {
   echo "✅ 部署完成"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
-  echo "🔑 通讯密钥(已编码): ${API_KEY}"
+  echo "🔑 通讯密钥: ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
   echo "📧 ACME 邮箱: ${EMAIL}"
@@ -148,7 +128,7 @@ install_hysteria() {
   pause
 }
 
-# --- 删除容器 ---
+# ----------- 删除容器与配置 -----------
 remove_container() {
   echo "⚠️ 确认删除容器与配置？(y/n)"
   read -r c
@@ -161,7 +141,7 @@ remove_container() {
   pause
 }
 
-# --- 更新镜像 ---
+# ----------- 更新镜像 -----------
 update_image() {
   docker_pull_safe "$IMAGE"
   docker restart "$CONTAINER" || true
@@ -169,32 +149,42 @@ update_image() {
   pause
 }
 
-# --- 卸载 docker ---
+# ----------- 彻底卸载 Docker -----------
 uninstall_docker_all() {
   echo "⚠️ 卸载 Docker 并彻底清理"
   read -rp "确认继续？(y/n): " c
   [[ ! $c =~ ^[Yy]$ ]] && pause && return
 
   echo "🧹 停止所有 Docker 服务..."
-  systemctl unmask docker docker.socket containerd >/dev/null 2>&1 || true
   systemctl stop docker docker.socket containerd 2>/dev/null || true
   systemctl disable docker docker.socket containerd 2>/dev/null || true
-  pkill -f dockerd 2>/dev/null || true
-  pkill -f containerd 2>/dev/null || true
-
-  echo "🧹 删除残留..."
+  pkill -9 docker dockerd containerd >/dev/null 2>&1 || true
   umount -lf /run/docker/netns/default 2>/dev/null || true
-  rm -rf /etc/docker /var/lib/docker /var/lib/containerd /run/docker* /run/containerd* ~/.docker
-  rm -rf /lib/systemd/system/docker* /etc/systemd/system/docker* /usr/lib/systemd/system/docker*
-  apt purge -y docker docker.io docker-engine docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
-  apt autoremove -y >/dev/null 2>&1 || true
+
+  echo "🧹 卸载所有相关包..."
+  apt purge -y docker docker.io docker-ce docker-ce-cli docker-compose docker-compose-plugin containerd runc >/dev/null 2>&1 || true
+  apt autoremove -y >/dev/null 2>&1
+  apt clean -y >/dev/null 2>&1
+
+  echo "🧹 删除所有文件和目录..."
+  rm -rf /etc/docker /var/lib/docker /var/lib/containerd ~/.docker
+  rm -rf /run/docker* /run/containerd*
+  rm -rf /usr/bin/docker /usr/local/bin/docker* /usr/sbin/containerd
+  rm -rf /etc/systemd/system/docker* /lib/systemd/system/docker* /usr/lib/systemd/system/docker*
+
+  echo "🧹 清理 socket..."
+  find /run /var/run -type s -name 'docker*.sock' -delete 2>/dev/null || true
+
+  echo "🧹 重载 systemd..."
   systemctl daemon-reexec
   systemctl daemon-reload
   systemctl reset-failed
+
   echo "✅ Docker 已彻底卸载"
   pause
 }
 
+# ----------- 菜单 -----------
 menu() {
   header
   read -rp "请选择操作: " opt
