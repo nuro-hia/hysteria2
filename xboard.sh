@@ -1,6 +1,7 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（自签证书 + 自动信任）
+# Hysteria 对接 XBoard 管理脚本（自签证书 + 禁用 ACME）
+# 适配镜像：ghcr.io/cedar2025/hysteria:latest
 # 无 ACME，自签证书，客户端无需导入证书
 # =====================================================
 
@@ -27,6 +28,7 @@ header() {
   echo "=============================="
 }
 
+# ---------- URL 编码 ----------
 urlencode() {
   local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
@@ -39,6 +41,7 @@ urlencode() {
   echo "$output"
 }
 
+# ---------- 检查/安装 Docker ----------
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -64,13 +67,26 @@ install_docker() {
   fi
 }
 
+# ---------- 拉镜像 ----------
 docker_pull_safe() {
   local image="$1"
+  echo "📦 拉取镜像中..."
   docker pull "$image" >/dev/null 2>&1 || {
-    echo "⚠️ 拉取失败，尝试清理临时目录..."
+    echo "⚠️ 拉取失败，尝试清理缓存后重试..."
     rm -rf /var/lib/docker/tmp/* 2>/dev/null || true
     docker pull "$image"
   }
+}
+
+# ---------- 随机端口 ----------
+random_port() {
+  while true; do
+    PORT=$(( (RANDOM % 40000) + 20000 ))
+    if ! ss -tuln | grep -q ":$PORT "; then
+      echo "$PORT"
+      return
+    fi
+  done
 }
 
 # ---------- 安装 Hysteria ----------
@@ -83,7 +99,7 @@ install_hysteria() {
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-
+  PORT=$(random_port)
   API_KEY=$(urlencode "$RAW_API_KEY")
 
   echo ""
@@ -91,8 +107,13 @@ install_hysteria() {
   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
     -subj "/CN=${DOMAIN}" >/dev/null 2>&1
-  echo "✅ 自签证书生成成功：$CONFIG_DIR/tls.crt"
 
+  if [[ ! -f "$CONFIG_DIR/tls.crt" ]]; then
+    echo "❌ 证书生成失败，请检查 openssl 是否安装正确"
+    exit 1
+  fi
+
+  echo "✅ 自签证书生成成功：$CONFIG_DIR/tls.crt"
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
 
@@ -105,7 +126,9 @@ install_hysteria() {
     -e domain="${DOMAIN}" \
     -e tlsCert="/etc/hysteria/tls.crt" \
     -e tlsKey="/etc/hysteria/tls.key" \
+    -e disableAcme=true \
     -e disableVerify=true \
+    -e listen=":${PORT}" \
     --name "${CONTAINER}" \
     "${IMAGE}"
 
@@ -116,12 +139,14 @@ install_hysteria() {
   echo "🔑 通讯密钥(已编码): ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
+  echo "📡 实际监听端口: ${PORT}"
   echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
   pause
 }
 
+# ---------- 删除容器 ----------
 remove_container() {
   echo "⚠️ 确认删除容器与配置？(y/n)"
   read -r c
@@ -134,6 +159,7 @@ remove_container() {
   pause
 }
 
+# ---------- 更新镜像 ----------
 update_image() {
   docker_pull_safe "$IMAGE"
   docker restart "$CONTAINER" || true
@@ -141,6 +167,7 @@ update_image() {
   pause
 }
 
+# ---------- 卸载 Docker ----------
 uninstall_docker_all() {
   echo ""
   echo "⚠️ 卸载 Docker 与所有组件"
@@ -149,37 +176,30 @@ uninstall_docker_all() {
   [[ ! $c =~ ^[Yy]$ ]] && pause && return
 
   echo "🧹 停止并删除容器..."
-  sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
-  sudo docker rm -f $(sudo docker ps -aq) 2>/dev/null || true
+  docker stop $(docker ps -aq) 2>/dev/null || true
+  docker rm -f $(docker ps -aq) 2>/dev/null || true
 
   echo "🧹 删除镜像与卷..."
-  sudo docker rmi -f $(sudo docker images -q) 2>/dev/null || true
-  sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
-  sudo docker network prune -f >/dev/null 2>&1 || true
+  docker rmi -f $(docker images -q) 2>/dev/null || true
+  docker volume rm $(docker volume ls -q) 2>/dev/null || true
+  docker network prune -f >/dev/null 2>&1 || true
 
   echo "🧹 卸载 Docker 包..."
   if command -v apt-get &>/dev/null; then
-    sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
-    sudo apt-get autoremove -y --purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
-  elif command -v yum &>/dev/null; then
-    sudo systemctl stop docker 2>/dev/null
-    sudo yum remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
-  elif command -v dnf &>/dev/null; then
-    sudo systemctl stop docker 2>/dev/null
-    sudo dnf remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
+    apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
+    apt-get autoremove -y --purge >/dev/null 2>&1
   fi
 
   echo "🧹 清理残留文件..."
-  sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker >/dev/null 2>&1
-  sudo rm -f /usr/local/bin/docker-compose >/dev/null 2>&1
-  sudo pip uninstall -y docker-compose >/dev/null 2>&1 || true
+  rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker >/dev/null 2>&1
 
   echo ""
-  echo "✅ 已完全卸载！"
+  echo "✅ Docker 已完全卸载！"
   echo "--------------------------------------"
   pause
 }
 
+# ---------- 菜单 ----------
 menu() {
   header
   read -rp "请选择操作: " opt
