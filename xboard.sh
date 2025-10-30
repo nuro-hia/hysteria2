@@ -14,7 +14,7 @@ pause(){ echo ""; read -rp "按回车返回菜单..." _; menu; }
 header(){
   clear
   echo "=============================="
-  echo " Hysteria 对接 XBoard 管理脚本 v3"
+  echo " Hysteria 对接 XBoard 管理脚本"
   echo "=============================="
   echo "1 安装并启动 Hysteria"
   echo "2 重启容器"
@@ -27,7 +27,6 @@ header(){
   echo "=============================="
 }
 
-# URL 编码（给 apiKey 用，避免 # % & ? ! 等问题）
 urlencode(){
   local data="$1" out="" c
   for ((i=0; i<${#data}; i++)); do
@@ -40,13 +39,11 @@ urlencode(){
   echo "$out"
 }
 
-# YAML 安全包裹（把单引号转义成两单引号，外层再用单引号）
 yaml_quote(){
   local s="${1//\'/\'\'}"
   printf "'%s'" "$s"
 }
 
-# 自动随机端口：200–999，且不等于 443
 rand_port(){
   local p
   while :; do
@@ -55,7 +52,6 @@ rand_port(){
   done
 }
 
-# 安装 Docker（稳定版，Debian）
 install_docker(){
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -87,7 +83,6 @@ docker_pull_safe(){
   }
 }
 
-# 生成自签证书（10年）
 gen_self_signed(){
   mkdir -p "$CONFIG_DIR"
   local domain="$1"
@@ -97,7 +92,6 @@ gen_self_signed(){
   echo "✅ 自签证书生成成功：$CONFIG_DIR/tls.crt"
 }
 
-# 写入 server.yaml（无 ACME，用 tls）
 write_server_yaml(){
   local api_host="$1"
   local api_key_enc="$2"
@@ -105,12 +99,10 @@ write_server_yaml(){
   local domain="$4"
   local listen_port="$5"
 
-  # 注意：apiKey 写入前先用 yaml_quote，再 URL 编码是上一步
   local api_key_yaml
   api_key_yaml=$(yaml_quote "$api_key_enc")
 
   cat > "$CONFIG_FILE" <<EOF
-# 由脚本生成：禁用 ACME，自签证书，适配 cedar2025/hysteria 的 v2board 模块
 v2board:
   apiHost: ${api_host}
   apiKey: ${api_key_yaml}
@@ -121,11 +113,9 @@ tls:
   cert: /etc/hysteria/tls.crt
   key: /etc/hysteria/tls.key
 
-# 直接 TLS 鉴权，apernet/hysteria 原生字段
 auth:
   type: v2board
 
-# 固定监听端口（不暴露映射，容器 host 网络，外部用域名+端口访问）
 listen: :${listen_port}
 
 trafficStats:
@@ -147,25 +137,25 @@ install_hysteria(){
   mkdir -p "$CONFIG_DIR"
 
   echo ""
-  read -rp "🌐 面板地址(XBoard，例如 https://mist.mistea.link): " API_HOST
+  read -rp "🌐 面板地址(XBoard): " API_HOST
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
+  read -rp "🎯 节点端口: " CUSTOM_PORT
 
-  # URL 编码 apiKey，避免后端构造 URL 时出错
   API_KEY_ENC="$(urlencode "$RAW_API_KEY")"
 
-  # 生成自签，先准备好 tls
+  if [[ -z "$CUSTOM_PORT" ]]; then
+    PORT="$(rand_port)"
+    echo "🔊 已自动分配端口: ${PORT}"
+  else
+    PORT="$CUSTOM_PORT"
+    echo "🎯 使用自定义端口: ${PORT}"
+  fi
+
   gen_self_signed "$DOMAIN"
-
-  # 自动监听端口（200..999 且 != 443）
-  PORT="$(rand_port)"
-  echo "🔊 监听端口自动设为：${PORT}"
-
-  # 写配置（无 ACME）
   write_server_yaml "$API_HOST" "$API_KEY_ENC" "$NODE_ID" "$DOMAIN" "$PORT"
 
-  # 清容器、拉镜像、启动
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
 
@@ -176,7 +166,7 @@ install_hysteria(){
     "${IMAGE}"
 
   echo ""
-  echo "✅ 部署完成（自签证书 / 无 ACME / 端口:${PORT}）"
+  echo "✅ 部署完成"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
   echo "🔑 通讯密钥(已URL编码): ${API_KEY_ENC}"
@@ -215,14 +205,16 @@ uninstall_docker_all(){
   read -rp "确认继续？(y/n): " c
   [[ ! $c =~ ^[Yy]$ ]] && pause && return
 
-  echo "🧹 停止并删除容器/镜像/卷/网络..."
+  echo "🧹 停止并删除容器..."
   sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
   sudo docker rm -f $(sudo docker ps -aq) 2>/dev/null || true
+
+  echo "🧹 删除镜像与卷..."
   sudo docker rmi -f $(sudo docker images -q) 2>/dev/null || true
   sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
-  sudo docker network prune -f 2>/dev/null || true
+  sudo docker network prune -f >/dev/null 2>&1 || true
 
-  echo "🧹 卸载 Docker 包（按发行版）..."
+  echo "🧹 卸载 Docker 包..."
   if command -v apt-get &>/dev/null; then
     sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
     sudo apt-get autoremove -y --purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
@@ -239,13 +231,9 @@ uninstall_docker_all(){
   sudo rm -f /usr/local/bin/docker-compose >/dev/null 2>&1
   sudo pip uninstall -y docker-compose >/dev/null 2>&1 || true
 
-  if ! command -v docker &>/dev/null && ! command -v docker-compose &>/dev/null; then
-    echo "✅ Docker 与 docker-compose 已完全卸载！"
-  else
-    echo "⚠️ 仍检测到部分组件，请手动检查："
-    which docker || true
-    which docker-compose || true
-  fi
+  echo ""
+  echo "✅ 已全部彻底卸载！"
+  echo "--------------------------------------"
   pause
 }
 
