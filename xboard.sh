@@ -1,8 +1,7 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（自签证书版）
-# 无 ACME，使用自签证书；带彻底卸载 Docker，输出美化
-# 版本：2025-10-30
+# Hysteria 对接 XBoard 管理脚本（自签证书 + 自动信任）
+# 无 ACME，自签证书，客户端无需导入证书
 # =====================================================
 
 set -euo pipefail
@@ -28,7 +27,6 @@ header() {
   echo "=============================="
 }
 
-# ---------- URL 编码 ----------
 urlencode() {
   local data="$1" output="" c
   for ((i=0; i<${#data}; i++)); do
@@ -41,7 +39,6 @@ urlencode() {
   echo "$output"
 }
 
-# ---------- 安装 Docker ----------
 install_docker() {
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -67,7 +64,6 @@ install_docker() {
   fi
 }
 
-# ---------- 拉镜像 ----------
 docker_pull_safe() {
   local image="$1"
   docker pull "$image" >/dev/null 2>&1 || {
@@ -109,11 +105,12 @@ install_hysteria() {
     -e domain="${DOMAIN}" \
     -e tlsCert="/etc/hysteria/tls.crt" \
     -e tlsKey="/etc/hysteria/tls.key" \
+    -e disableVerify=true \
     --name "${CONTAINER}" \
     "${IMAGE}"
 
   echo ""
-  echo "✅ 部署完成（已使用自签证书，无 ACME）"
+  echo "✅ 部署完成"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
   echo "🔑 通讯密钥(已编码): ${API_KEY}"
@@ -125,7 +122,6 @@ install_hysteria() {
   pause
 }
 
-# ---------- 删除容器 ----------
 remove_container() {
   echo "⚠️ 确认删除容器与配置？(y/n)"
   read -r c
@@ -138,7 +134,6 @@ remove_container() {
   pause
 }
 
-# ---------- 更新镜像 ----------
 update_image() {
   docker_pull_safe "$IMAGE"
   docker restart "$CONTAINER" || true
@@ -146,7 +141,6 @@ update_image() {
   pause
 }
 
-# ---------- 卸载 Docker（美化输出版） ----------
 uninstall_docker_all() {
   echo ""
   echo "⚠️ 卸载 Docker 与所有组件"
@@ -186,7 +180,6 @@ uninstall_docker_all() {
   pause
 }
 
-# ---------- 菜单 ----------
 menu() {
   header
   read -rp "请选择操作: " opt
