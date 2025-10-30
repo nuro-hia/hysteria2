@@ -1,6 +1,7 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（ACME自动申请版，无自签）
+# Hysteria 对接 XBoard 管理脚本（自签证书版）
+# 无 ACME，使用自签证书；带彻底卸载 Docker，输出美化
 # 版本：2025-10-30
 # =====================================================
 
@@ -87,42 +88,38 @@ install_hysteria() {
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
 
-  # 邮箱必填
-  while [[ -z "${EMAIL:-}" ]]; do
-    read -rp "📧 ACME 邮箱(必填): " EMAIL
-    if [[ -z "$EMAIL" ]]; then
-      echo "❌ 邮箱不能为空，请重新输入。"
-    fi
-  done
-
   API_KEY=$(urlencode "$RAW_API_KEY")
+
+  echo ""
+  echo "📜 生成自签证书..."
+  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
+    -subj "/CN=${DOMAIN}" >/dev/null 2>&1
+  echo "✅ 自签证书生成成功：$CONFIG_DIR/tls.crt"
 
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
 
-  echo "📜 开始申请 ACME 证书..."
-  echo "（若证书已存在或申请失败，Hysteria 将自动重试）"
-  echo ""
-
+  echo "🐳 启动 Hysteria 容器..."
   docker run -itd --restart=always --network=host \
     -v "${CONFIG_DIR}:/etc/hysteria" \
     -e apiHost="${API_HOST}" \
     -e apiKey="${API_KEY}" \
     -e nodeID="${NODE_ID}" \
     -e domain="${DOMAIN}" \
-    -e acmeDomains="${DOMAIN}" \
-    -e acmeEmail="${EMAIL}" \
+    -e tlsCert="/etc/hysteria/tls.crt" \
+    -e tlsKey="/etc/hysteria/tls.key" \
     --name "${CONTAINER}" \
     "${IMAGE}"
 
   echo ""
-  echo "✅ Hysteria 已启动，正在自动申请 ACME 证书..."
+  echo "✅ 部署完成（已使用自签证书，无 ACME）"
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
   echo "🔑 通讯密钥(已编码): ${API_KEY}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
-  echo "📧 ACME 邮箱: ${EMAIL}"
+  echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
   echo "--------------------------------------"
   pause
@@ -149,18 +146,24 @@ update_image() {
   pause
 }
 
-# ---------- 卸载 Docker ----------
+# ---------- 卸载 Docker（美化输出版） ----------
 uninstall_docker_all() {
+  echo ""
   echo "⚠️ 卸载 Docker 与所有组件"
+  echo "--------------------------------------"
   read -rp "确认继续？(y/n): " c
   [[ ! $c =~ ^[Yy]$ ]] && pause && return
 
+  echo "🧹 停止并删除容器..."
   sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
   sudo docker rm -f $(sudo docker ps -aq) 2>/dev/null || true
+
+  echo "🧹 删除镜像与卷..."
   sudo docker rmi -f $(sudo docker images -q) 2>/dev/null || true
   sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
-  sudo docker network prune -f 2>/dev/null || true
+  sudo docker network prune -f >/dev/null 2>&1 || true
 
+  echo "🧹 卸载 Docker 包..."
   if command -v apt-get &>/dev/null; then
     sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
     sudo apt-get autoremove -y --purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
@@ -172,17 +175,14 @@ uninstall_docker_all() {
     sudo dnf remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
   fi
 
-  sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker
-  sudo rm -f /usr/local/bin/docker-compose
-  sudo pip uninstall -y docker-compose 2>/dev/null || true
+  echo "🧹 清理残留文件..."
+  sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker >/dev/null 2>&1
+  sudo rm -f /usr/local/bin/docker-compose >/dev/null 2>&1
+  sudo pip uninstall -y docker-compose >/dev/null 2>&1 || true
 
-  if ! command -v docker &>/dev/null && ! command -v docker-compose &>/dev/null; then
-    echo "✅ Docker 与 docker-compose 已完全卸载！"
-  else
-    echo "⚠️ 仍检测到部分组件，请手动检查："
-    which docker || true
-    which docker-compose || true
-  fi
+  echo ""
+  echo "✅ 已完全卸载！"
+  echo "--------------------------------------"
   pause
 }
 
