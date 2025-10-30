@@ -1,13 +1,13 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本
+# Hysteria 对接 XBoard 管理脚本（ACME自动申请版，无自签）
+# 版本：2025-10-30
 # =====================================================
 
 set -euo pipefail
 CONFIG_DIR="/etc/hysteria"
 IMAGE="ghcr.io/cedar2025/hysteria:latest"
 CONTAINER="hysteria"
-DEFAULT_EMAIL="his666@outlook.com"
 
 pause() { echo ""; read -rp "按回车返回菜单..." _; menu; }
 
@@ -86,14 +86,24 @@ install_hysteria() {
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  read -rp "📧 ACME 邮箱(默认: ${DEFAULT_EMAIL}): " EMAIL
-  EMAIL=${EMAIL:-$DEFAULT_EMAIL}
+
+  # 邮箱必填
+  while [[ -z "${EMAIL:-}" ]]; do
+    read -rp "📧 ACME 邮箱(必填): " EMAIL
+    if [[ -z "$EMAIL" ]]; then
+      echo "❌ 邮箱不能为空，请重新输入。"
+    fi
+  done
+
   API_KEY=$(urlencode "$RAW_API_KEY")
 
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
 
-  echo "🐳 启动 Hysteria 容器..."
+  echo "📜 开始申请 ACME 证书..."
+  echo "（若证书已存在或申请失败，Hysteria 将自动重试）"
+  echo ""
+
   docker run -itd --restart=always --network=host \
     -v "${CONFIG_DIR}:/etc/hysteria" \
     -e apiHost="${API_HOST}" \
@@ -106,7 +116,7 @@ install_hysteria() {
     "${IMAGE}"
 
   echo ""
-  echo "✅ 部署完成"
+  echo "✅ Hysteria 已启动，正在自动申请 ACME 证书..."
   echo "--------------------------------------"
   echo "🌐 面板地址: ${API_HOST}"
   echo "🔑 通讯密钥(已编码): ${API_KEY}"
