@@ -178,8 +178,6 @@ install_hysteria(){
   echo "🐳 启动 Hysteria 容器..."
   docker run -itd --restart=always --network=host \
     --ulimit nofile=1048576:1048576 \
-    --sysctl net.core.rmem_max=2500000 \
-    --sysctl net.core.wmem_max=2500000 \
     -v "${CONFIG_DIR}:/etc/hysteria" \
     --name "${CONTAINER}" \
     "${IMAGE}"
