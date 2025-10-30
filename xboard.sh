@@ -1,6 +1,8 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本
+# Hysteria 对接 XBoard 管理脚本（自签证书版，无需手动端口）
+# 作者：nuro & ChatGPT
+# 系统：Debian 12+
 # =====================================================
 
 set -euo pipefail
@@ -45,14 +47,6 @@ yaml_quote(){
   printf "'%s'" "$s"
 }
 
-rand_port(){
-  local p
-  while :; do
-    p=$((200 + RANDOM % 800))
-    [[ "$p" -ne 443 ]] && { echo "$p"; return; }
-  done
-}
-
 install_docker(){
   echo "🧩 检查 Docker 环境..."
   if ! command -v docker >/dev/null 2>&1; then
@@ -78,7 +72,7 @@ install_docker(){
 docker_pull_safe(){
   local image="$1"
   docker pull "$image" >/dev/null 2>&1 || {
-    echo "⚠️ 拉取失败，尝试清理临时目录后重试..."
+    echo "⚠️ 拉取失败，尝试清理缓存后重试..."
     rm -rf /var/lib/docker/tmp/* 2>/dev/null || true
     docker pull "$image"
   }
@@ -87,10 +81,14 @@ docker_pull_safe(){
 gen_self_signed(){
   mkdir -p "$CONFIG_DIR"
   local domain="$1"
-  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
-    -subj "/CN=${domain}" >/dev/null 2>&1
-  echo "✅ 自签证书生成成功：$CONFIG_DIR/tls.crt"
+  if [[ -f "$CONFIG_DIR/tls.crt" && -f "$CONFIG_DIR/tls.key" ]]; then
+    echo "🔹 检测到已有自签证书，跳过生成"
+  else
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+      -keyout "$CONFIG_DIR/tls.key" -out "$CONFIG_DIR/tls.crt" \
+      -subj "/CN=${domain}" >/dev/null 2>&1
+    echo "✅ 自签证书生成成功：$CONFIG_DIR/tls.crt"
+  fi
 }
 
 write_server_yaml(){
@@ -98,7 +96,6 @@ write_server_yaml(){
   local api_key_enc="$2"
   local node_id="$3"
   local domain="$4"
-  local listen_port="$5"
 
   local api_key_yaml
   api_key_yaml=$(yaml_quote "$api_key_enc")
@@ -116,8 +113,6 @@ tls:
 
 auth:
   type: v2board
-
-listen: :${listen_port}
 
 log:
   level: info
@@ -142,14 +137,14 @@ acl:
     - reject(127.0.0.0/8)
     - reject(fc00::/7)
 EOF
-  echo "✅ 已写入优化配置：$CONFIG_FILE"
+  echo "✅ 已写入配置：$CONFIG_FILE"
 }
 
 setup_log_rotation(){
   cat > /etc/cron.daily/hysteria_log_clean <<EOF
 #!/bin/bash
 LOG_FILE="/var/log/hysteria.log"
-MAX_LINES=100
+MAX_LINES=200
 if [ -f "\$LOG_FILE" ]; then
   LINES=\$(wc -l < "\$LOG_FILE")
   if [ "\$LINES" -gt "\$MAX_LINES" ]; then
@@ -158,7 +153,7 @@ if [ -f "\$LOG_FILE" ]; then
 fi
 EOF
   chmod +x /etc/cron.daily/hysteria_log_clean
-  echo "🧹 已设置每日自动清理日志任务 (保留 100 行)"
+  echo "🧹 已设置每日自动清理日志任务 (保留 200 行)"
 }
 
 install_hysteria(){
@@ -170,30 +165,12 @@ install_hysteria(){
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  read -rp "🎯 自定义端口 (留空则自动从面板获取): " CUSTOM_PORT
 
   API_KEY_ENC="$(urlencode "$RAW_API_KEY")"
 
-  # === 尝试自动获取端口 ===
-  echo "🔍 正在尝试从面板获取节点端口..."
-  PANEL_PORT=$(curl -fsSL "${API_HOST}/api/v1/server/UniConfig?node_id=${NODE_ID}" \
-    -H "Authorization: Bearer ${RAW_API_KEY}" | grep -oP '"port":\K\d+' || true)
-
-  if [[ -n "$PANEL_PORT" ]]; then
-    PORT="$PANEL_PORT"
-    echo "🎯 成功获取面板端口: ${PORT}"
-  elif [[ -n "$CUSTOM_PORT" ]]; then
-    PORT="$CUSTOM_PORT"
-    echo "🎯 使用自定义端口: ${PORT}"
-  else
-    PORT="$(rand_port)"
-    echo "⚠️ 面板未返回端口，已自动分配随机端口: ${PORT}"
-  fi
-
-  # === 生成证书与配置 ===
   gen_self_signed "$DOMAIN"
-  write_server_yaml "$API_HOST" "$API_KEY_ENC" "$NODE_ID" "$DOMAIN" "$PORT"
-  setup_log_clean
+  write_server_yaml "$API_HOST" "$API_KEY_ENC" "$NODE_ID" "$DOMAIN"
+  setup_log_rotation
 
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
@@ -213,15 +190,13 @@ install_hysteria(){
   echo "🌐 面板地址: ${API_HOST}"
   echo "🔑 通讯密钥(已URL编码): ${API_KEY_ENC}"
   echo "🆔 节点 ID: ${NODE_ID}"
-  echo "🏷️ 节点域名: ${DOMAIN}"
-  echo "⚓ 监听端口: ${PORT}"
+  echo "🏷️ 域名(CN): ${DOMAIN}"
   echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
-  echo "🧹 日志文件: ${LOG_FILE} (每小时清理)"
+  echo "🧹 日志文件: ${LOG_FILE}"
   echo "--------------------------------------"
   pause
 }
-
 
 remove_container(){
   echo "⚠️ 确认删除容器与配置？(y/n)"
@@ -245,21 +220,19 @@ update_image(){
 uninstall_docker_all(){
   echo ""
   echo "⚠️ 卸载 Docker 与所有组件"
-  echo "--------------------------------------"
   read -rp "确认继续？(y/n): " c
   [[ ! $c =~ ^[Yy]$ ]] && pause && return
 
   echo "🧹 停止并删除容器..."
-  sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
-  sudo docker rm -f $(sudo docker ps -aq) 2>/dev/null || true
-  sudo docker rmi -f $(sudo docker images -q) 2>/dev/null || true
-  sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
-  sudo docker network prune -f >/dev/null 2>&1 || true
+  docker stop $(docker ps -aq) 2>/dev/null || true
+  docker rm -f $(docker ps -aq) 2>/dev/null || true
+  docker rmi -f $(docker images -q) 2>/dev/null || true
+  docker volume rm $(docker volume ls -q) 2>/dev/null || true
+  docker network prune -f >/dev/null 2>&1 || true
 
-  echo "🧹 清理 Docker 包与数据..."
+  echo "🧹 清理 Docker..."
   apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 || true
   rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker /etc/cron.daily/hysteria_log_clean "$LOG_FILE"
-  echo ""
   echo "✅ Docker 已彻底卸载！"
   sleep 3
   exit 0
