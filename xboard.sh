@@ -15,7 +15,7 @@ pause(){ echo ""; read -rp "按回车返回菜单..." _; menu; }
 header(){
   clear
   echo "=============================="
-  echo " Hysteria 对接 XBoard 管理脚本 v1"
+  echo " Hysteria 对接 XBoard 管理脚本"
   echo "=============================="
   echo "1 安装并启动 Hysteria"
   echo "2 重启容器"
