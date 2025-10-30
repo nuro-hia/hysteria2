@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（优化版）
+# Hysteria 对接 XBoard 管理脚本
 # =====================================================
 
 set -euo pipefail
@@ -15,7 +15,7 @@ pause(){ echo ""; read -rp "按回车返回菜单..." _; menu; }
 header(){
   clear
   echo "=============================="
-  echo " Hysteria 对接 XBoard 管理脚本 v2"
+  echo " Hysteria 对接 XBoard 管理脚本"
   echo "=============================="
   echo "1 安装并启动 Hysteria"
   echo "2 重启容器"
@@ -149,7 +149,7 @@ setup_log_rotation(){
   cat > /etc/cron.daily/hysteria_log_clean <<EOF
 #!/bin/bash
 LOG_FILE="/var/log/hysteria.log"
-MAX_LINES=1000
+MAX_LINES=100
 if [ -f "\$LOG_FILE" ]; then
   LINES=\$(wc -l < "\$LOG_FILE")
   if [ "\$LINES" -gt "\$MAX_LINES" ]; then
@@ -158,7 +158,7 @@ if [ -f "\$LOG_FILE" ]; then
 fi
 EOF
   chmod +x /etc/cron.daily/hysteria_log_clean
-  echo "🧹 已设置每日自动清理日志任务 (保留 1000 行)"
+  echo "🧹 已设置每日自动清理日志任务 (保留 100 行)"
 }
 
 install_hysteria(){
