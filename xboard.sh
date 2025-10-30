@@ -1,11 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本（cedar2025/hysteria，自签证书，无 ACME）
-# - 使用自签证书：/etc/hysteria/tls.crt / tls.key
-# - 自动 URL 编码 apiKey，解决特殊字符导致的请求错误
-# - 固定自动监听端口：随机选取 200–999（排除 443）
-# - 直接写入 /etc/hysteria/server.yaml（覆盖镜像默认生成的 ACME 配置）
-# - 漂亮的卸载输出（第 7 项）
+# Hysteria 对接 XBoard 管理脚本
 # =====================================================
 
 set -euo pipefail
