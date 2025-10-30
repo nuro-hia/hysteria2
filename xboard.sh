@@ -170,27 +170,39 @@ install_hysteria(){
   read -rp "🔑 通讯密钥(apiKey): " RAW_API_KEY
   read -rp "🆔 节点 ID(nodeID): " NODE_ID
   read -rp "🏷️ 节点域名(证书 CN): " DOMAIN
-  read -rp "🎯 节点端口: " CUSTOM_PORT
+  read -rp "🎯 自定义端口 (留空则自动从面板获取): " CUSTOM_PORT
 
   API_KEY_ENC="$(urlencode "$RAW_API_KEY")"
 
-  if [[ -z "$CUSTOM_PORT" ]]; then
-    PORT="$(rand_port)"
-    echo "🔊 已自动分配端口: ${PORT}"
-  else
+  # === 尝试自动获取端口 ===
+  echo "🔍 正在尝试从面板获取节点端口..."
+  PANEL_PORT=$(curl -fsSL "${API_HOST}/api/v1/server/UniConfig?node_id=${NODE_ID}" \
+    -H "Authorization: Bearer ${RAW_API_KEY}" | grep -oP '"port":\K\d+' || true)
+
+  if [[ -n "$PANEL_PORT" ]]; then
+    PORT="$PANEL_PORT"
+    echo "🎯 成功获取面板端口: ${PORT}"
+  elif [[ -n "$CUSTOM_PORT" ]]; then
     PORT="$CUSTOM_PORT"
     echo "🎯 使用自定义端口: ${PORT}"
+  else
+    PORT="$(rand_port)"
+    echo "⚠️ 面板未返回端口，已自动分配随机端口: ${PORT}"
   fi
 
+  # === 生成证书与配置 ===
   gen_self_signed "$DOMAIN"
   write_server_yaml "$API_HOST" "$API_KEY_ENC" "$NODE_ID" "$DOMAIN" "$PORT"
-  setup_log_rotation
+  setup_log_clean
 
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
 
   echo "🐳 启动 Hysteria 容器..."
   docker run -itd --restart=always --network=host \
+    --ulimit nofile=1048576:1048576 \
+    --sysctl net.core.rmem_max=2500000 \
+    --sysctl net.core.wmem_max=2500000 \
     -v "${CONFIG_DIR}:/etc/hysteria" \
     --name "${CONTAINER}" \
     "${IMAGE}"
@@ -202,13 +214,14 @@ install_hysteria(){
   echo "🔑 通讯密钥(已URL编码): ${API_KEY_ENC}"
   echo "🆔 节点 ID: ${NODE_ID}"
   echo "🏷️ 节点域名: ${DOMAIN}"
-  echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "⚓ 监听端口: ${PORT}"
+  echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "🐳 容器名称: ${CONTAINER}"
-  echo "🧹 日志文件: ${LOG_FILE} (每日自动清理)"
+  echo "🧹 日志文件: ${LOG_FILE} (每小时清理)"
   echo "--------------------------------------"
   pause
 }
+
 
 remove_container(){
   echo "⚠️ 确认删除容器与配置？(y/n)"
