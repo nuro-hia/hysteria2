@@ -261,7 +261,8 @@ uninstall_docker_all(){
   rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker /etc/cron.daily/hysteria_log_clean "$LOG_FILE"
   echo ""
   echo "✅ Docker 已彻底卸载！"
-  exit 0 ;;
+  sleep 3
+  exit 0
 }
 
 menu(){
