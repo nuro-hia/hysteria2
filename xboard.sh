@@ -1,11 +1,12 @@
 #!/bin/bash
 # =====================================================
-# Hysteria 对接 XBoard 管理脚本
+# Hysteria 对接 XBoard 管理脚本（优化版）
 # =====================================================
 
 set -euo pipefail
 CONFIG_DIR="/etc/hysteria"
 CONFIG_FILE="$CONFIG_DIR/server.yaml"
+LOG_FILE="/var/log/hysteria.log"
 IMAGE="ghcr.io/cedar2025/hysteria:latest"
 CONTAINER="hysteria"
 
@@ -14,7 +15,7 @@ pause(){ echo ""; read -rp "按回车返回菜单..." _; menu; }
 header(){
   clear
   echo "=============================="
-  echo " Hysteria 对接 XBoard 管理脚本"
+  echo " Hysteria 对接 XBoard 管理脚本 v2"
   echo "=============================="
   echo "1 安装并启动 Hysteria"
   echo "2 重启容器"
@@ -47,7 +48,7 @@ yaml_quote(){
 rand_port(){
   local p
   while :; do
-    p=$((200 + RANDOM % 800)) # 200..999
+    p=$((200 + RANDOM % 800))
     [[ "$p" -ne 443 ]] && { echo "$p"; return; }
   done
 }
@@ -118,6 +119,18 @@ auth:
 
 listen: :${listen_port}
 
+log:
+  level: info
+  file: /var/log/hysteria.log
+
+quic:
+  initStreamReceiveWindow: 26843545
+  maxStreamReceiveWindow: 26843545
+  initConnReceiveWindow: 67108864
+  maxConnReceiveWindow: 67108864
+  congestionControl: bbr
+  maxIdleTimeout: 30s
+
 trafficStats:
   listen: 127.0.0.1:7653
 
@@ -129,7 +142,23 @@ acl:
     - reject(127.0.0.0/8)
     - reject(fc00::/7)
 EOF
-  echo "✅ 已写入配置：$CONFIG_FILE"
+  echo "✅ 已写入优化配置：$CONFIG_FILE"
+}
+
+setup_log_rotation(){
+  cat > /etc/cron.daily/hysteria_log_clean <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/hysteria.log"
+MAX_LINES=1000
+if [ -f "\$LOG_FILE" ]; then
+  LINES=\$(wc -l < "\$LOG_FILE")
+  if [ "\$LINES" -gt "\$MAX_LINES" ]; then
+    tail -n \$MAX_LINES "\$LOG_FILE" > "\${LOG_FILE}.tmp" && mv "\${LOG_FILE}.tmp" "\$LOG_FILE"
+  fi
+fi
+EOF
+  chmod +x /etc/cron.daily/hysteria_log_clean
+  echo "🧹 已设置每日自动清理日志任务 (保留 1000 行)"
 }
 
 install_hysteria(){
@@ -155,6 +184,7 @@ install_hysteria(){
 
   gen_self_signed "$DOMAIN"
   write_server_yaml "$API_HOST" "$API_KEY_ENC" "$NODE_ID" "$DOMAIN" "$PORT"
+  setup_log_rotation
 
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker_pull_safe "$IMAGE"
@@ -175,6 +205,7 @@ install_hysteria(){
   echo "📜 证书路径: ${CONFIG_DIR}/tls.crt"
   echo "⚓ 监听端口: ${PORT}"
   echo "🐳 容器名称: ${CONTAINER}"
+  echo "🧹 日志文件: ${LOG_FILE} (每日自动清理)"
   echo "--------------------------------------"
   pause
 }
@@ -185,7 +216,7 @@ remove_container(){
   if [[ $c =~ ^[Yy]$ ]]; then
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
     docker rmi -f "$IMAGE" >/dev/null 2>&1 || true
-    rm -rf "$CONFIG_DIR"
+    rm -rf "$CONFIG_DIR" "$LOG_FILE" /etc/cron.daily/hysteria_log_clean 2>/dev/null || true
     echo "✅ 已删除容器与配置"
   fi
   pause
@@ -208,32 +239,15 @@ uninstall_docker_all(){
   echo "🧹 停止并删除容器..."
   sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
   sudo docker rm -f $(sudo docker ps -aq) 2>/dev/null || true
-
-  echo "🧹 删除镜像与卷..."
   sudo docker rmi -f $(sudo docker images -q) 2>/dev/null || true
   sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
   sudo docker network prune -f >/dev/null 2>&1 || true
 
-  echo "🧹 卸载 Docker 包..."
-  if command -v apt-get &>/dev/null; then
-    sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
-    sudo apt-get autoremove -y --purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
-  elif command -v yum &>/dev/null; then
-    sudo systemctl stop docker 2>/dev/null
-    sudo yum remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
-  elif command -v dnf &>/dev/null; then
-    sudo systemctl stop docker 2>/dev/null
-    sudo dnf remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
-  fi
-
-  echo "🧹 清理残留文件..."
-  sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker >/dev/null 2>&1
-  sudo rm -f /usr/local/bin/docker-compose >/dev/null 2>&1
-  sudo pip uninstall -y docker-compose >/dev/null 2>&1 || true
-
+  echo "🧹 清理 Docker 包与数据..."
+  apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 || true
+  rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker /etc/cron.daily/hysteria_log_clean "$LOG_FILE"
   echo ""
-  echo "✅ 已全部彻底卸载！"
-  echo "--------------------------------------"
+  echo "✅ Docker 已彻底卸载！"
   pause
 }
 
@@ -245,7 +259,7 @@ menu(){
     2) docker restart "$CONTAINER" || echo "⚠️ 未找到容器"; pause ;;
     3) docker stop "$CONTAINER" || echo "⚠️ 未找到容器"; pause ;;
     4) remove_container ;;
-    5) docker logs -f "$CONTAINER" || echo "⚠️ 未找到容器"; pause ;;
+    5) tail -n 50 "$LOG_FILE" 2>/dev/null || docker logs -f "$CONTAINER"; pause ;;
     6) update_image ;;
     7) uninstall_docker_all ;;
     8) exit 0 ;;
